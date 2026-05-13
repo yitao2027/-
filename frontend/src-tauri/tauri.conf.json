@@ -1,0 +1,78 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "勺子Claw",
+  "version": "5.5.16",
+  "identifier": "com.shaoziclaw.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "勺子Claw - 餐饮人的超级AI大脑",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "transparent": false,
+        "url": "dist/index.html"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https://* data: blob:; connect-src 'self' https://*.openai.com https://*.zhipuai.cn https://*.deepseek.com https://www.moxing.pro https://api.shaoziclaw.com https://releases.shaoziclaw.com http://47.93.61.79:3900 http://47.93.61.79:3001 https://api.siliconflow.cn wss://*; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg",
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [
+      "../dist"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": false
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "Developer ID Application: tao yi (7LKY65K92Q)",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist"
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    },
+    "updater": {
+      "endpoints": [
+        "https://releases.shaoziclaw.com/latest.json"
+      ],
+      "signature": "",
+      "dialog": false,
+      "pubkey": ""
+    }
+  }
+}

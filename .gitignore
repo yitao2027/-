@@ -1,0 +1,53 @@
+# ===== Build Artifacts =====
+frontend/node_modules/
+frontend/dist/
+frontend/src-tauri/target/
+
+# ===== Archives & Installers =====
+*.dmg
+*.zip
+*.app
+*.exe
+*.msi
+*.deb
+*.AppImage
+
+# ===== macOS =====
+.DS_Store
+Thumbs.db
+._*
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== Signing Keys (NEVER commit secrets) =====
+*.key
+*.csr
+*.pem
+*.p12
+*.pfx
+shaoziclaw_signing.key
+shaoziclaw_signing_2026.key
+shaoziclaw.csr
+shaoziclaw_2026.csr
+
+# ===== Windows build artifacts =====
+ShaoziClaw-Windows-*/
+
+# ===== Knowledge base index (large binary) =====
+knowledge-base-index/
+
+# ===== Tauri =====
+frontend/src-tauri/gen/
+
+# ===== Website (separate repo) =====
+website/
+
+# ===== Environment =====
+.env
+.env.local
+.env.*.local
