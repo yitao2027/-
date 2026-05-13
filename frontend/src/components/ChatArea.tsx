@@ -236,12 +236,12 @@ export default function ChatArea() {
     }
 
     // 【文件附件】检查是否有已上传文件，提取内容作为上下文
-    const { uploadedFiles } = useAppStore.getState()
+    const { uploadedFiles: currentFiles } = useAppStore.getState()
     let fileContext = ''
     // 🔧 Bug1修复：收集图片dataUrl用于vision多模态传输
     let imageDataList: { dataUrl: string; name: string }[] = []
-    if (uploadedFiles.length > 0) {
-      const fileInfos = uploadedFiles.map(f => {
+    if (currentFiles.length > 0) {
+      const fileInfos = currentFiles.map(f => {
         let preview = ''
         // 🔧 图片：记录名称 + 保留dataUrl用于vision分析
         if (f.type === 'image' && f.dataUrl) {
@@ -282,7 +282,7 @@ export default function ChatArea() {
         }
         return preview
       }).join('\n\n')
-      fileContext = `\n\n📎 用户上传了以下${uploadedFiles.length}个文件，请基于这些文件的内容结合用户问题进行分析和回答：\n${fileInfos}\n\n---\n用户的问题：`
+      fileContext = `\n\n📎 用户上传了以下${currentFiles.length}个文件，请基于这些文件的内容结合用户问题进行分析和回答：\n${fileInfos}\n\n---\n用户的问题：`
     }
 
     const userMessage: Message = {
@@ -290,7 +290,7 @@ export default function ChatArea() {
       role: 'user', 
       content: textToSend || '(文件分析请求)', 
       timestamp: new Date(),
-      attachments: uploadedFiles.length > 0 ? [...uploadedFiles] : undefined,
+      attachments: currentFiles.length > 0 ? [...currentFiles] : undefined,
     }
 
     // 【1】专家会话/任务会话：消息添加到对应会话（v5.3.2: getState避免闭包）

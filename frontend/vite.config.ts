@@ -13,6 +13,7 @@ export default defineConfig({
   build: {
     target: 'esnext',
     outDir: 'dist',
+    sourcemap: true, // B091诊断：开sourcemap以还原TDZ崩溃栈到源码行
   },
   // 🔧 禁用rolldown（Vite8默认），使用经典Rollup（rolldown对复杂JSX有解析bug）
   experimental: {

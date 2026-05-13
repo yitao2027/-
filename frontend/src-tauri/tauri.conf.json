@@ -27,7 +27,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https://* data: blob:; connect-src 'self' https://*.openai.com https://*.zhipuai.cn https://*.deepseek.com https://www.moxing.pro https://api.shaoziclaw.com https://releases.shaoziclaw.com http://47.93.61.79:3900 http://47.93.61.79:3001 https://api.siliconflow.cn wss://*; font-src 'self' data:"
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' https://* data: blob: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost https://*.openai.com https://*.zhipuai.cn https://*.deepseek.com https://www.moxing.pro https://api.shaoziclaw.com https://releases.shaoziclaw.com http://47.93.61.79:3900 http://47.93.61.79:3001 https://api.siliconflow.cn wss://*; font-src 'self' data:"
     }
   },
   "bundle": {
