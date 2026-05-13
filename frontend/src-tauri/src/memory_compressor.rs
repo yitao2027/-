@@ -13,6 +13,22 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+/// v5.5.13: 按字节数安全截取（落在字符边界，不切断 UTF-8 多字节字符）
+fn safe_truncate_bytes(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes { return s.to_string(); }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    s[..end].to_string()
+}
+
+/// v5.5.13: 按字符数安全截取
+fn safe_truncate_chars(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => s[..idx].to_string(),
+        None => s.to_string(),
+    }
+}
+
 /// 结构化记忆条目
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -47,9 +63,9 @@ pub async fn compress_conversation(
     eprintln!("[MEMORY] compress_conversation 开始, api_base={}, model={}", api_base, model);
 
     // 截断对话内容，避免 prompt 过长（DeepSeek V4 上下文有限）
+    // v5.5.13: 用 safe_truncate_bytes 替代 String::truncate，避免 char boundary panic
     let truncated_json = if messages_json.len() > 8000 {
-        let mut s = messages_json.to_string();
-        s.truncate(8000);
+        let mut s = safe_truncate_bytes(messages_json, 8000);
         s.push_str("\n...(对话已截断)");
         s
     } else {
@@ -269,11 +285,11 @@ pub fn get_memory_context(
         return None;
     }
 
-    // 截断
+    // 截断 — v5.5.13: 安全截取避免 char boundary panic
     let display = if content.len() > max_chars {
         format!(
             "{}...\n*(记忆已截断至{}字符)*",
-            &content[..max_chars],
+            safe_truncate_bytes(&content, max_chars),
             max_chars
         )
     } else {

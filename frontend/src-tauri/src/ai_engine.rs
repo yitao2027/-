@@ -732,8 +732,9 @@ pub async fn call_ai_streaming_events(
                     ).await {
                         Ok(Ok(content)) => {
                             let content_len = content.len();
-                            let preview = if content_len > 3000 {
-                                format!("{}...(共{}字符)", &content[..3000], content_len)
+                            // v5.5.13: char_indices 安全截取，修复中文文档 char boundary panic
+                            let preview = if content.chars().count() > 3000 {
+                                format!("{}...(共{}字符)", safe_truncate_chars(&content, 3000), content_len)
                             } else {
                                 content.clone()
                             };
@@ -1145,7 +1146,8 @@ async fn real_api(key: &str, model: &str, req: &ChatRequest) -> Result<String,St
             return Err("⚠️ API请求超时(504)。通常原因：图片过大或网络不稳定，请稍后重试。".to_string());
         }
         let body = r.text().await.unwrap_or_default();
-        let detail = if body.len() > 200 { &body[..200] } else { &body };
+        // v5.5.13: 安全截取，避免中文错误体 char boundary panic
+        let detail = safe_truncate_bytes(&body, 200);
         return Err(format!("API error {}: {}", status, detail));
     }
     let v:Value=r.json().await.map_err(|e|format!("{}",e))?;
@@ -1209,7 +1211,7 @@ async fn real_api_streaming(
         let error_msg = if status.as_u16() == 504 {
             "⚠️ API请求超时(504)。请稍后重试。".to_string()
         } else {
-            format!("API请求失败 {}: {}", status, &body[..body.len().min(200)])
+            format!("API请求失败 {}: {}", status, safe_truncate_bytes(&body, 200))
         };
         emit_event(app, "error",
             &error_msg,
@@ -1414,7 +1416,8 @@ async fn real_api_with_redline(
         if status.as_u16() == 504 {
             return Err("⚠️ API请求超时(504)。通常原因是：①图片过大（建议压缩至2MB以内） ②网络不稳定 ③AI服务繁忙。请稍后重试。".to_string());
         }
-        let detail = if body.len() > 200 { &body[..200] } else { &body };
+        // v5.5.13: 安全截取，避免中文错误体 char boundary panic
+        let detail = safe_truncate_bytes(&body, 200);
         return Err(format!("API error {}: {}", status, detail));
     }
     let v: Value = r.json().await.map_err(|e| format!("{}", e))?;
@@ -1763,8 +1766,12 @@ fn format_poi_result(label: &str, data: &serde_json::Value, radius: u32) -> Stri
                     .and_then(|v| v.as_str())
                     .unwrap_or("-")
                     .to_string();
-                // 截断过长地址
-                let addr_short = if addr.len() > 20 { format!("{}...", &addr[..20]) } else { addr };
+                // v5.5.13: 按字符数截断（兼容中文地址），避免 char boundary panic
+                let addr_short = if addr.chars().count() > 20 {
+                    format!("{}...", safe_truncate_chars(&addr, 20))
+                } else {
+                    addr
+                };
                 lines.push(format!("| {} | {} | {} | {} | {} |", name, distance, rating, price, addr_short));
             }
 
@@ -1783,8 +1790,29 @@ fn emit_log(msg: &str) {
 }
 
 /// v5.2.1: 安全截断文本用于日志/事件显示
+/// v5.5.13: 修复 UTF-8 char boundary panic — 按字节截到字符边界
 fn truncate_for_log(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len { s.to_string() } else { format!("{}...", &s[..max_len]) }
+    if s.len() <= max_len { return s.to_string(); }
+    // 找到 <= max_len 的最近字符边界
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    format!("{}...", &s[..end])
+}
+
+/// v5.5.13: 按"字符数"安全截取，避免中文文档预览触发 char boundary panic
+fn safe_truncate_chars(s: &str, max_chars: usize) -> String {
+    match s.char_indices().nth(max_chars) {
+        Some((idx, _)) => s[..idx].to_string(),
+        None => s.to_string(),
+    }
+}
+
+/// v5.5.13: 按"字节数"安全截取（用于截断API错误体等场景），保证落在字符边界上
+fn safe_truncate_bytes(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes { return s.to_string(); }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    s[..end].to_string()
 }
 
 fn demo_gen(msg: &str, sks: &[Sk]) -> String {
