@@ -1,0 +1,78 @@
+# ===== Node / npm =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ===== Frontend build outputs =====
+dist/
+dist-ssr/
+build/
+.vite/
+*.local
+
+# ===== Tauri / Rust =====
+frontend/src-tauri/target/
+frontend/src-tauri/gen/schemas/
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# ===== IDE / Editor =====
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ===== Logs =====
+logs/
+*.log
+
+# ===== Env / Secrets =====
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+.secret
+secrets/
+
+# ===== Tauri signing / installer =====
+*.pfx
+*.cer
+*.p12
+
+# ===== Test / Coverage =====
+coverage/
+.nyc_output/
+*.lcov
+
+# ===== Cache =====
+.cache/
+.parcel-cache/
+.turbo/
+
+# ===== User-specific runtime data =====
+*.db-shm
+*.db-wal
+
+# ===== Mac 残留（待清理后可删此行）=====
+# Users/
+
+# ===== WorkBuddy 工作区元数据 =====
+.workbuddy/memory/
