@@ -269,11 +269,11 @@ pub fn get_memory_context(
         return None;
     }
 
-    // 截断
-    let display = if content.len() > max_chars {
+    // 截断（v5.5.9: 修复 UTF-8 不安全截断）
+    let display = if content.chars().count() > max_chars {
         format!(
             "{}...\n*(记忆已截断至{}字符)*",
-            &content[..max_chars],
+            content.chars().take(max_chars).collect::<String>(),
             max_chars
         )
     } else {
