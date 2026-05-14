@@ -265,71 +265,90 @@ pub struct BrowserScrapeResult {
 }
 
 pub async fn browser_scrape(url: &str) -> Result<BrowserScrapeResult, String> {
-    let python_check = std::process::Command::new("python3")
-        .args(&["-c", "import playwright; print('ok')"])
-        .output();
+    let url_owned = url.to_string();
 
-    match python_check {
-        Ok(output) if output.status.success() => {}
-        _ => {
-            return Ok(BrowserScrapeResult {
+    // v5.5.9: 使用 spawn_blocking 包裹同步进程调用，避免阻塞 tokio runtime
+    match tokio::time::timeout(
+        Duration::from_secs(60),
+        tokio::task::spawn_blocking(move || {
+            // 检查 Playwright 是否安装（同步）
+            let python_check = std::process::Command::new("python3")
+                .args(&["-c", "import playwright; print('ok')"])
+                .output();
+
+            match python_check {
+                Ok(output) if output.status.success() => {}
+                _ => {
+                    return Err("Playwright未安装。请先安装Chrome浏览器，然后执行: pip3 install playwright && playwright install chromium".to_string());
+                }
+            }
+
+            let script = format!(
+                "import asyncio\nfrom playwright.async_api import async_playwright\nasync def main():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=True)\n        page = await browser.new_page()\n        await page.goto('{}', wait_until='networkidle', timeout=30000)\n        title = await page.title()\n        text = await page.evaluate('() => document.body.innerText')\n        await browser.close()\n        print('TITLE:' + title)\n        print('TEXT:' + text[:5000])\nasyncio.run(main())",
+                url_owned.replace("'", "\\'")
+            );
+
+            let output = std::process::Command::new("python3")
+                .arg("-c")
+                .arg(&script)
+                .output()
+                .map_err(|e| format!("无法执行Playwright: {}", e))?;
+
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+            if !output.status.success() && stdout.is_empty() {
+                return Err(format!("Playwright执行失败: {}", stderr));
+            }
+
+            let mut title = String::new();
+            let mut text = String::new();
+            let mut in_text = false;
+
+            for line in stdout.lines() {
+                if line.starts_with("TITLE:") {
+                    title = line[6..].to_string();
+                } else if line.starts_with("TEXT:") {
+                    text = line[5..].to_string();
+                    in_text = true;
+                } else if in_text {
+                    text.push('\n');
+                    text.push_str(line);
+                }
+            }
+
+            Ok::<(String, String, String), String>((url_owned, title, text))
+        })
+    ).await {
+        Ok(Ok((url_res, title, text))) => {
+            let is_success = !text.is_empty();
+            Ok(BrowserScrapeResult {
+                url: url_res,
+                title,
+                text,
+                success: is_success,
+                error: if !is_success { Some("未能提取页面内容".to_string()) } else { None },
+            })
+        }
+        Ok(Err(e)) => {
+            Ok(BrowserScrapeResult {
                 url: url.to_string(),
                 title: String::new(),
                 text: String::new(),
                 success: false,
-                error: Some("Playwright未安装。请先安装Chrome浏览器，然后执行: pip3 install playwright && playwright install chromium".to_string()),
-            });
+                error: Some(e),
+            })
+        }
+        Err(_) => {
+            Ok(BrowserScrapeResult {
+                url: url.to_string(),
+                title: String::new(),
+                text: String::new(),
+                success: false,
+                error: Some("Playwright执行超时(60s)".to_string()),
+            })
         }
     }
-
-    let script = format!(
-        "import asyncio\nfrom playwright.async_api import async_playwright\nasync def main():\n    async with async_playwright() as p:\n        browser = await p.chromium.launch(headless=True)\n        page = await browser.new_page()\n        await page.goto('{}', wait_until='networkidle', timeout=30000)\n        title = await page.title()\n        text = await page.evaluate('() => document.body.innerText')\n        await browser.close()\n        print('TITLE:' + title)\n        print('TEXT:' + text[:5000])\nasyncio.run(main())",
-        url.replace("'", "\\'")
-    );
-
-    let output = std::process::Command::new("python3")
-        .arg("-c")
-        .arg(&script)
-        .output()
-        .map_err(|e| format!("无法执行Playwright: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() && stdout.is_empty() {
-        return Ok(BrowserScrapeResult {
-            url: url.to_string(),
-            title: String::new(),
-            text: String::new(),
-            success: false,
-            error: Some(format!("Playwright执行失败: {}", stderr)),
-        });
-    }
-
-    let mut title = String::new();
-    let mut text = String::new();
-    let mut in_text = false;
-
-    for line in stdout.lines() {
-        if line.starts_with("TITLE:") {
-            title = line[6..].to_string();
-        } else if line.starts_with("TEXT:") {
-            text = line[5..].to_string();
-            in_text = true;
-        } else if in_text {
-            text.push('\n');
-            text.push_str(line);
-        }
-    }
-
-    let is_success = !text.is_empty();
-    Ok(BrowserScrapeResult {
-        url: url.to_string(),
-        title,
-        text,
-        success: is_success,
-        error: if !is_success { Some("未能提取页面内容".to_string()) } else { None },
-    })
 }
 
 // ============================================================

@@ -334,9 +334,10 @@ const loadExpertSessions = (): ExpertSession[] => {
   return [];
 };
 
+// v5.5.9: 使用 trySetItem 替代直接 localStorage.setItem，避免绕过配额保护
 const saveExpertSessions = (sessions: ExpertSession[]) => {
   try {
-    localStorage.setItem('shaoziclaw_expert_sessions', JSON.stringify(sessions));
+    trySetItem('shaoziclaw_expert_sessions', JSON.stringify(sessions));
   } catch {}
 };
 

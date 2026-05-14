@@ -13,6 +13,14 @@ use tauri::{Emitter, Manager};
 const MOXING_API: &str = "https://www.moxing.pro/v1";
 const MOXING_KEY: &str = "sk-mxai-3d96e98c6a64adcde222b8020e9ab42979fd17a30a46f31e60b4a3e6ca03c3e2";
 
+/// v5.5.9: 统一超时常量，替代散落在各处的硬编码超时值
+const RAG_TIMEOUT_SECS: u64 = 15;       // RAG知识库检索
+const MEMORY_TIMEOUT_SECS: u64 = 15;    // 跨会话记忆检索
+const NOTES_TIMEOUT_SECS: u64 = 10;     // 工作笔记读取
+const FILE_READ_TIMEOUT_SECS: u64 = 15; // 本地文件读取
+const WEB_SCRAPE_TIMEOUT_SECS: u64 = 60; // Playwright浏览器自动化
+const AI_API_TIMEOUT_SECS: u64 = 180;   // AI API调用（流式/非流式）
+
 /// 🦞 ShaoziClaw 勺子Claw System Prompt — 完整版（含格式化输出要求）
 const SYSTEM_PROMPT: &str = r#"你是勺子🦞，餐饮人的超级AI大脑。你内置261个专业技能模块和25位专家，覆盖选址、成本、菜单、营销、团队、供应链、风控、扩张全链路。
 
@@ -727,7 +735,7 @@ pub async fn call_ai_streaming_events(
                     emit_event(app, "knowledge_retrieval", &format!("📁 正在读取: {}", path),
                         "读取文件内容中...", "📄");
                     match tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
+                        std::time::Duration::from_secs(FILE_READ_TIMEOUT_SECS),
                         read_local_file(&path)
                     ).await {
                         Ok(Ok(content)) => {
@@ -833,7 +841,7 @@ pub async fn call_ai_streaming_events(
                 if kb_initialized && !um.is_empty() {
                     crate::claw_log::log_info("DIAG", "call_ai_streaming [0f2] 🚀进入RAG检索timeout");
                     // 🔧 v5.5.4: 添加15秒超时保护，防止LanceDB/bge-m3挂起导致聊天卡死
-                    match tokio::time::timeout(Duration::from_secs(15), crate::rag_engine::retrieve_knowledge(&path, um, 5)).await {
+                    match tokio::time::timeout(Duration::from_secs(RAG_TIMEOUT_SECS), crate::rag_engine::retrieve_knowledge(&path, um, 5)).await {
                         Ok(Ok(chunks)) if !chunks.is_empty() => {
                             emit_event(app, "knowledge_retrieval",
                                 &format!("📚 检索到 {} 条相关知识", chunks.len()),
@@ -912,7 +920,7 @@ pub async fn call_ai_streaming_events(
                                     }
                                 }
                             }
-                            _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                            _ = tokio::time::sleep(Duration::from_secs(MEMORY_TIMEOUT_SECS)) => {
                                 crate::claw_log::log_warn("DIAG", "call_ai_streaming [0g2b] ⏰tokio::select!超时(15s)");
                                 Err("跨会话记忆检索超时(15s)".to_string())
                             }
@@ -960,7 +968,7 @@ pub async fn call_ai_streaming_events(
             Ok(data_dir) => {
                 let dir = data_dir.clone();
                 match tokio::time::timeout(
-                    Duration::from_secs(10),
+                    Duration::from_secs(NOTES_TIMEOUT_SECS),
                     tokio::task::spawn_blocking(move || {
                         crate::working_notes::get_notes_context(&dir, 3)
                     })
@@ -2006,7 +2014,8 @@ fn extract_file_path(msg: &str) -> Option<String> {
 }
 
 /// 读取本地文件内容（支持txt/pdf/docx/xlsx等）
-async fn read_local_file(path: &str) -> Result<String, String> {
+/// v5.5.9: 所有同步I/O包裹在内部闭包中，调用处必须用 spawn_blocking 保护
+fn read_local_file_sync(path: &str) -> Result<String, String> {
     let p = std::path::Path::new(path);
     if !p.exists() {
         return Err(format!("文件不存在: {}", path));
@@ -2019,16 +2028,12 @@ async fn read_local_file(path: &str) -> Result<String, String> {
 
     match ext.as_str() {
         "txt" | "md" | "json" | "csv" | "xml" | "html" | "htm" | "js" | "ts" | "py" | "rs" | "toml" | "yaml" | "yml" | "log" => {
-            // 纯文本文件直接读取
             std::fs::read_to_string(path)
                 .map_err(|e| format!("读取失败: {}", e))
         }
         "pdf" => {
-            // PDF：尝试用简单的文本提取（提取可读文本部分）
             let bytes = std::fs::read(path).map_err(|e| format!("读取PDF失败: {}", e))?;
-            // 简单提取：查找PDF中的文本流（不完美，但能提取大部分文本）
             let content = String::from_utf8_lossy(&bytes);
-            // 提取括号内的文本（PDF文本对象格式）
             let texts: Vec<&str> = content.matches(|c: char| {
                 c.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&c) || "，。！？、：；\"\"''（）【】《》—…· ".contains(c)
             })
@@ -2042,7 +2047,6 @@ async fn read_local_file(path: &str) -> Result<String, String> {
             }
         }
         "docx" => {
-            // DOCX：使用macOS textutil转换为txt（无需外部crate）
             use std::process::Command;
             let output = Command::new("textutil")
                 .args(["-convert", "txt", "-stdout", path])
@@ -2062,7 +2066,6 @@ async fn read_local_file(path: &str) -> Result<String, String> {
             Err(format!("{}格式暂不支持直接读取。请转换为docx/pdf/txt格式后重试。", ext.to_uppercase()))
         }
         _ => {
-            // 二进制文件或图片
             let metadata = match std::fs::metadata(path) {
                 Ok(m) => m,
                 Err(_) => {
@@ -2072,4 +2075,12 @@ async fn read_local_file(path: &str) -> Result<String, String> {
             Err(format!("不支持直接读取此文件类型(.{})，大小: {}KB。支持的格式: txt, md, json, csv, pdf, docx", ext, metadata.len() / 1024))
         }
     }
+}
+
+/// v5.5.9: async wrapper，用 spawn_blocking 避免阻塞 tokio runtime
+async fn read_local_file(path: &str) -> Result<String, String> {
+    let path_owned = path.to_string();
+    tokio::task::spawn_blocking(move || read_local_file_sync(&path_owned))
+        .await
+        .map_err(|e| format!("文件读取任务失败: {}", e))?
 }

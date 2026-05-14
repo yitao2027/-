@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- JIT与代码签名 -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- 🔧 v5.3.9: 龙虾级文件访问权限 -->
+    <!-- 用户通过保存对话框选择的文件 -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <!-- Downloads目录 -->
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+    <!-- 全磁盘访问（龙虾级：对标OpenClaw Gateway的Unix用户权限） -->
+    <key>com.apple.security.files.all</key>
+    <true/>
+    <!-- 临时例外：允许访问用户主目录下所有路径 -->
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+    <array>
+        <string>/</string>
+    </array>
+    <!-- 临时例外：允许访问绝对路径 -->
+    <key>com.apple.security.temporary-exception.files.absolute-path.read-write</key>
+    <array>
+        <string>/</string>
+    </array>
+</dict>
+</plist>
