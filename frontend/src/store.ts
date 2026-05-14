@@ -185,7 +185,7 @@ export interface UserState {
   completeOnboarding: (profile: UserProfile) => void;
 
   // 专家会话
-  createExpertSession: (expertType: ExpertType, expertName: string, expertAvatar: string, title?: string, greeting?: string) => string;
+  createExpertSession: (expertType: ExpertType, expertName: string, expertAvatar: string, title?: string, greeting?: string, skillName?: string) => string;
   switchExpertSession: (sessionId: string) => void;
   deleteExpertSession: (sessionId: string) => void;
   renameExpertSession: (sessionId: string, newTitle: string) => void;
@@ -279,7 +279,8 @@ export interface ExpertSession {
   messages: Message[];
   createdAt: Date;
   updatedAt: Date;
-  skill?: string;             // 当前关联的Skill ID
+  skill?: string;             // 当前关联的Skill ID（旧字段保留兼容）
+  skillName?: string;         // 🔧 v5.5.22 Bug#2修复：专家关联的skill名（与TaskSession对齐，路由后端激活RAG）
 }
 
 // ⏰💬 任务会话（v4.9.9 — 复用ChatArea全屏窗口，与专家会话一致）
@@ -964,22 +965,36 @@ export const useStore = create<UserState>((set, get) => ({
   },
 
   // 专家会话 🔧 v4.9.9: 添加去重检查
-  createExpertSession: (expertType, expertName, expertAvatar, title, greeting) => {
+  createExpertSession: (expertType, expertName, expertAvatar, title, greeting, skillName) => {
     // 🔧 v4.9.9: 去重 — 如果已存在同专家名的会话，直接切换
     const existing = get().expertSessions.find(s => s.expertName === expertName);
     if (existing) {
       console.log('[v4.9.9] 专家会话去重: 已存在', expertName, '→ 切换到', existing.id);
-      set({
-        activeExpertSessionId: existing.id,
-        activeExpertType: expertType,
-        activeTaskSessionId: null, // 🔧 v5.3.10: 切换专家会话时清除任务会话
-      });
+      // 🔧 v5.5.22 Bug#2修复：去重切换时也要更新skillName（用户可能从不同入口进同一专家）
+      if (skillName && existing.skillName !== skillName) {
+        const sessions = get().expertSessions.map(s =>
+          s.id === existing.id ? { ...s, skillName } : s
+        );
+        saveExpertSessions(sessions);
+        set({
+          expertSessions: sessions,
+          activeExpertSessionId: existing.id,
+          activeExpertType: expertType,
+          activeTaskSessionId: null,
+        });
+      } else {
+        set({
+          activeExpertSessionId: existing.id,
+          activeExpertType: expertType,
+          activeTaskSessionId: null, // 🔧 v5.3.10: 切换专家会话时清除任务会话
+        });
+      }
       return existing.id;
     }
 
     const id = `expert_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     // 🔧 B008修复：创建时直接写入greeting，消除window变量竞态
-    console.log('[B008v2] createExpertSession called, greeting=', greeting ? greeting.substring(0, 50) : 'NONE');
+    console.log('[B008v2] createExpertSession called, greeting=', greeting ? greeting.substring(0, 50) : 'NONE', 'skillName=', skillName || 'NONE');
     const messages = greeting ? [{
       id: `expert-greeting-${Date.now()}`,
       role: 'assistant' as const,
@@ -997,6 +1012,7 @@ export const useStore = create<UserState>((set, get) => ({
       messages,
       createdAt: new Date(),
       updatedAt: new Date(),
+      skillName, // 🔧 v5.5.22 Bug#2修复：写入skillName用于后端路由
     };
     const sessions = [newSession, ...get().expertSessions];
     saveExpertSessions(sessions);

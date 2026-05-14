@@ -612,8 +612,13 @@ export default function ChatArea() {
         }
       })
 
-      // 确定实际使用的技能（优先级：任务会话skill > 用户选择的skill）
+      // 确定实际使用的技能（优先级：专家会话skill > 任务会话skill > 用户选择的skill）
+      // 🔧 v5.5.22 Bug#2修复：专家会话的skillName最优先，避免selectedSkill全局漂移导致路由错误
       const effectiveSkill = (() => {
+        if (activeExpertSessionId) {
+          const es = storeState.expertSessions.find(s => s.id === activeExpertSessionId);
+          if (es?.skillName) return es.skillName;
+        }
         if (activeTaskSessionId && !activeExpertSessionId) {
           const ts = storeState.taskSessions.find(s => s.id === activeTaskSessionId);
           if (ts?.skillName) return ts.skillName;

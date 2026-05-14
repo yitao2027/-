@@ -212,8 +212,10 @@ checkAuth()
     try {
       if (expertId) {
         const info = expertIdMap[expertId] || { type: 'general' as ExpertType, title: '餐饮专家', emoji: '🥄' }
-        createExpertSession(info.type, info.title, info.emoji, undefined, greeting)
+        // 🔧 v5.5.22 Bug#2修复：skillName直接写入ExpertSession，避免selectedSkill全局漂移
+        createExpertSession(info.type, info.title, info.emoji, undefined, greeting, info.skillName)
         if (info.skillName) {
+          // 仍然同步全局selectedSkill，作为兼容兜底（旧逻辑）
           const { setSelectedSkill } = useAppStore.getState()
           setSelectedSkill(info.skillName)
         }
