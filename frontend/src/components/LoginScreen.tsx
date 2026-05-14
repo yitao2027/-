@@ -202,10 +202,11 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
             
             <div className="mb-5">
               <h2 className="text-lg font-semibold text-white mb-0.5">登录 / 注册</h2>
-              <p className="text-xs text-gray-500">{loginMode === 'phone' ? '手机号快捷登录' : '输入邀请码开启餐饮人的超级AI大脑'}</p>
+              <p className="text-xs text-gray-500">输入邀请码开启餐饮人的超级AI大脑</p>
             </div>
 
-            {/* ═══ 登录方式 Tab 切换 ═══ */}
+            {/* ═══ 登录方式 Tab 切换（v5.5.23 暂时隐藏：等后端 api.shaoziclaw.com 短信通道上线后再放开）═══ */}
+            {/*
             <div className="flex gap-1 mb-5 p-1 rounded-lg" style={{ background: 'rgba(255,255,255,0.04)' }}>
               <button type="button" onClick={() => { setLoginMode('invite'); setError(''); }}
                 className={`flex-1 py-2 rounded-md text-xs font-medium transition-all ${loginMode === 'invite' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`}
@@ -218,9 +219,10 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
                 手机号登录
               </button>
             </div>
+            */}
 
-            {/* ═══ 手机号登录表单 ═══ */}
-            {loginMode === 'phone' && (
+            {/* ═══ 手机号登录表单（v5.5.23 暂时禁用：依赖后端短信通道）═══ */}
+            {false && loginMode === 'phone' && (
               <form onSubmit={handlePhoneLogin} className="space-y-3.5">
                 {/* 手机号 */}
                 <div>
