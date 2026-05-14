@@ -1,6 +1,6 @@
 [package]
 name = "shaoziclaw-app"
-version = "5.5.17"
+version = "5.5.20"
 description = "勺子Claw - 餐饮人的超级AI大脑"
 authors = ["ShaoziClaw Team"]
 edition = "2021"

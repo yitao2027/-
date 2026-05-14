@@ -38,10 +38,10 @@ import { renderMarkdownEnhanced } from '../utils/markdown'
 
 // ====== 系统自带大模型（v5.0.0: 统一走墨行 Moxing API）======
 const BUILTIN_MODELS = [
-  { id: 'deepseek-v4', name: '墨行 · DeepSeek V4', icon: Zap, desc: '默认旗舰 · 深度推理', color: '#2563EB', hasKey: true },
-  { id: 'glm-5.1', name: '墨行 · GLM-5.1', icon: Eye, desc: '图片分析 · 智谱旗舰', color: '#10B981', hasKey: true },
-  { id: 'kimi-k2.5', name: '墨行 · Kimi K2.5', icon: Brain, desc: '长文本 · 月之暗面', color: '#8B5CF6', hasKey: true },
-  { id: 'seedance-2.0', name: '墨行 · Seedance 2.0', icon: Film, desc: '视频生成 · 豆包', color: '#F59E0B', hasKey: true },
+  { id: 'deepseek-v4', name: 'DeepSeek V4', icon: Zap, desc: '默认旗舰 · 深度推理', color: '#2563EB', hasKey: true },
+  { id: 'glm-5.1', name: 'GLM-5.1', icon: Eye, desc: '图片分析 · 智谱旗舰', color: '#10B981', hasKey: true },
+  { id: 'kimi-k2.5', name: 'Kimi K2.5', icon: Brain, desc: '长文本 · 月之暗面', color: '#8B5CF6', hasKey: true },
+  { id: 'seedance-2.0', name: 'Seedance 2.0', icon: Film, desc: '视频生成 · 豆包', color: '#F59E0B', hasKey: true },
 ]
 
 const EXPERT_NAMES: Record<string, string> = {
@@ -1804,8 +1804,6 @@ function MessageBubble({ message }: { message: Message }) {
                           {([
                             {label:'Word 文档',icon:'📄',format:'docx' as const},
                             {label:'Excel 表格',icon:'📊',format:'xlsx' as const},
-                            {label:'PPT 演示',icon:'📽️',format:'pptx' as const},
-                            {label:'PDF 文件',icon:'📕',format:'pdf' as const},
                             {label:'HTML 网页',icon:'🌐',format:'html' as const},
                           ]).map(item=>(
                             <button key={item.format} onClick={()=>handleExport(item.format)}

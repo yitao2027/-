@@ -683,106 +683,220 @@ struct ImageGenerateResult {
 }
 
 /// 调用AI生图模型
-/// B053: 硅基流动 Kolors（主力，实测可用）→ 备用 api.apiyi.com gpt-image-2
+/// v5.5.20 T6: 全面切换到墨行异步task模式
+///   - Banana2 (Gemini-3.1-Flash-Image-Preview, 1k + 16:9)
+///   - Seedream4.5 (doubao-seedream-4-5-251128, 1728x2304)
 /// 返回base64编码的PNG数据
 #[tauri::command]
 async fn image_generate(prompt: String, size: Option<String>) -> Result<ImageGenerateResult, String> {
-    let size = size.unwrap_or_else(|| "1024x1024".into());
+    let _ = size; // 墨行两模型各自有固定size，不再使用前端传入值
+    let image_url: Option<String> = None; // 文生图模式（图生图后续单独命令暴露）
 
-    // 🔧 并行尝试两个生图模型，取最快成功的结果
-    println!("[image_generate] 并行启动2个生图模型: prompt长度={}", prompt.len());
+    // 🔧 并行尝试两个墨行生图模型，取最快成功的结果
+    println!("[image_generate] 并行启动2个墨行生图模型: prompt长度={}", prompt.len());
     let start = std::time::Instant::now();
 
     let (r1, r2) = tokio::join!(
-        try_siliconflow_image(&prompt, &size),
-        try_api_gpt_image_2(&prompt, &size)
+        try_moxing_banana2(&prompt, image_url.as_deref()),
+        try_moxing_seedream(&prompt, image_url.as_deref())
     );
 
     // 按优先级返回第一个成功的结果
     if let Ok(r) = r1 {
-        println!("[image_generate] 硅基流动Kolors成功，耗时{:?}", start.elapsed());
+        println!("[image_generate] ✅ 墨行Banana2 成功，耗时{:?}", start.elapsed());
         return Ok(r);
     }
     if let Ok(r) = r2 {
-        println!("[image_generate] gpt-image-2成功，耗时{:?}", start.elapsed());
+        println!("[image_generate] ✅ 墨行Seedream4.5 成功，耗时{:?}", start.elapsed());
         return Ok(r);
     }
 
     let errors = vec![
-        format!("硅基流动Kolors: {}", r1.err().unwrap_or_default()),
-        format!("gpt-image-2: {}", r2.err().unwrap_or_default()),
+        format!("墨行Banana2: {}", r1.err().unwrap_or_default()),
+        format!("墨行Seedream4.5: {}", r2.err().unwrap_or_default()),
     ];
     Err(format!("所有图片模型失败: {}", errors.join(" | ")))
 }
 
-/// B053: 调用硅基流动 SiliconFlow 图片生成（Kolors模型，实测可用）
-async fn try_siliconflow_image(prompt: &str, size: &str) -> Result<ImageGenerateResult, String> {
-    let api_key = "sk-acutyiuetcukysdmtvevlufuhyetpedsxekukdywdgjymoru";
+/// 墨行 API key（与 compress_memory 共用）
+const MOXING_API_KEY: &str = "sk-mxai-3d96e98c6a64adcde222b8020e9ab42979fd17a30a46f31e60b4a3e6ca03c3e2";
+const MOXING_API_BASE: &str = "https://www.moxing.pro/v1";
+
+/// 提交墨行异步任务并轮询结果
+/// 1) POST /media/generations 拿 task_id
+/// 2) 轮询 GET /media/tasks/<task_id> 直到完成（最多 30 次 × 2s = 60s）
+/// 3) 提取图片 URL，下载并转为 base64
+async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> Result<ImageGenerateResult, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("HTTP客户端失败: {}", e))?;
 
-    let image_api_url = "https://api.siliconflow.cn/v1/images/generations";
-    let body = serde_json::json!({
-        "model": "Kwai-Kolors/Kolors",
-        "prompt": prompt,
-        "image_size": size,
-        "batch_size": 1,
-        "num_inference_steps": 25,
-        "guidance_scale": 7.5,
-    });
-
-    println!("[image_generate] 硅基流动Kolors 请求中... size={}", size);
-    let resp = client.post(image_api_url)
-        .header("Authorization", format!("Bearer {}", api_key))
+    // ① 提交任务
+    let submit_url = format!("{}/media/generations", MOXING_API_BASE);
+    println!("[image_generate][{}] 提交任务: {}", model_label, submit_url);
+    let resp = client.post(&submit_url)
+        .header("Authorization", format!("Bearer {}", MOXING_API_KEY))
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
         .await
-        .map_err(|e| {
-            println!("[image_generate] 硅基流动请求失败: {}", e);
-            format!("请求失败: {}", e)
-        })?;
+        .map_err(|e| format!("提交请求失败: {}", e))?;
 
     let status = resp.status();
-    let json: serde_json::Value = resp.json().await.map_err(|e| {
-        println!("[image_generate] 硅基流动解析失败: {}", e);
-        format!("解析失败: {}", e)
-    })?;
+    let json: serde_json::Value = resp.json().await
+        .map_err(|e| format!("提交响应解析失败: {}", e))?;
 
     if !status.is_success() {
-        let err_msg = json.get("error").and_then(|e| {
-            if e.is_string() { e.as_str() }
-            else { e.get("message").and_then(|m| m.as_str()) }
-        }).unwrap_or("未知错误");
-        println!("[image_generate] 硅基流动HTTP错误 {}: {}", status, err_msg);
-        return Err(format!("HTTP {}: {}", status, err_msg));
+        let err_msg = json.get("error")
+            .and_then(|e| if e.is_string() { e.as_str() } else { e.get("message").and_then(|m| m.as_str()) })
+            .or_else(|| json.get("message").and_then(|m| m.as_str()))
+            .unwrap_or("未知错误");
+        println!("[image_generate][{}] 提交HTTP错误 {}: {}", model_label, status, err_msg);
+        return Err(format!("提交HTTP {}: {}", status, err_msg));
     }
 
-    // 硅基流动返回格式: {"images": [{"url": "..."}], "timings": {...}}
-    if let Some(images) = json.get("images").and_then(|i| i.as_array()) {
-        if let Some(first) = images.first() {
-            if let Some(url) = first.get("url").and_then(|u| u.as_str()) {
-                println!("[image_generate] 硅基流动返回图片URL，下载中...");
-                // 下载图片并转为base64
-                match download_image_to_b64(url).await {
-                    Ok(b64) => {
-                        println!("[image_generate] ✅ 硅基流动生图成功, b64长度: {}", b64.len());
-                        return Ok(ImageGenerateResult { success: true, b64_data: Some(b64), error: None });
-                    }
-                    Err(e) => {
-                        // URL下载失败，返回URL让前端处理
-                        println!("[image_generate] 硅基流动下载失败: {}", e);
-                        return Ok(ImageGenerateResult { success: true, b64_data: None, error: Some(format!("url:{}", url)) });
-                    }
+    // ② 提取 task_id（兼容多种返回字段）
+    // 优先级：根 data 立即返回 url -> task_id -> id
+    if let Some(direct_url) = extract_image_url_from_moxing(&json) {
+        println!("[image_generate][{}] 同步直返URL，下载中...", model_label);
+        return download_url_to_result(&direct_url, model_label).await;
+    }
+
+    let task_id = json.get("task_id").and_then(|v| v.as_str())
+        .or_else(|| json.get("id").and_then(|v| v.as_str()))
+        .or_else(|| json.get("data").and_then(|d| d.get("task_id")).and_then(|v| v.as_str()))
+        .or_else(|| json.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str()))
+        .ok_or_else(|| format!("响应未携带task_id: {}", json))?
+        .to_string();
+
+    println!("[image_generate][{}] 取得task_id={}, 开始轮询", model_label, task_id);
+
+    // ③ 轮询任务状态（最多 30 次，每次 2s = 60s）
+    let poll_url = format!("{}/media/tasks/{}", MOXING_API_BASE, task_id);
+    for attempt in 1..=30 {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+        let r = client.get(&poll_url)
+            .header("Authorization", format!("Bearer {}", MOXING_API_KEY))
+            .send()
+            .await;
+
+        let r = match r {
+            Ok(r) => r,
+            Err(e) => {
+                println!("[image_generate][{}] 轮询#{} 网络错误: {}", model_label, attempt, e);
+                continue;
+            }
+        };
+
+        let st = r.status();
+        let pj: serde_json::Value = match r.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                println!("[image_generate][{}] 轮询#{} 解析错误: {}", model_label, attempt, e);
+                continue;
+            }
+        };
+
+        if !st.is_success() {
+            println!("[image_generate][{}] 轮询#{} HTTP {}: {}", model_label, attempt, st, pj);
+            continue;
+        }
+
+        // 状态字段：status/state，可能值: pending/queued/running/processing/succeeded/completed/success/failed/error
+        let state = pj.get("status").and_then(|v| v.as_str())
+            .or_else(|| pj.get("state").and_then(|v| v.as_str()))
+            .or_else(|| pj.get("data").and_then(|d| d.get("status")).and_then(|v| v.as_str()))
+            .unwrap_or("");
+
+        let s_lower = state.to_lowercase();
+        if s_lower == "failed" || s_lower == "error" || s_lower == "cancelled" {
+            let err = pj.get("error").and_then(|e| if e.is_string() { e.as_str() } else { e.get("message").and_then(|m| m.as_str()) })
+                .or_else(|| pj.get("message").and_then(|m| m.as_str()))
+                .unwrap_or("任务失败");
+            return Err(format!("任务{}: {}", state, err));
+        }
+
+        // 尝试提取 URL — 部分模型完成时不显式返回 status
+        if let Some(url) = extract_image_url_from_moxing(&pj) {
+            println!("[image_generate][{}] 轮询#{} 完成，下载图片", model_label, attempt);
+            return download_url_to_result(&url, model_label).await;
+        }
+
+        if attempt % 5 == 0 {
+            println!("[image_generate][{}] 轮询#{} 状态={} 仍在处理", model_label, attempt, state);
+        }
+    }
+
+    Err("轮询超时(60s)".to_string())
+}
+
+/// 从墨行响应中尽力提取图片 URL（兼容多种结构）
+fn extract_image_url_from_moxing(v: &serde_json::Value) -> Option<String> {
+    // 1. data: [{url}]
+    if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
+        if let Some(first) = arr.first() {
+            if let Some(u) = first.get("url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+            if let Some(u) = first.get("image_url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+        }
+    }
+    // 2. images: [{url}] 或 [string]
+    if let Some(arr) = v.get("images").and_then(|d| d.as_array()) {
+        if let Some(first) = arr.first() {
+            if let Some(u) = first.as_str() { return Some(u.to_string()); }
+            if let Some(u) = first.get("url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+        }
+    }
+    // 3. result.url / output.url / data.url
+    for key in ["result", "output", "data"] {
+        if let Some(obj) = v.get(key) {
+            if let Some(u) = obj.get("url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+            if let Some(u) = obj.get("image_url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+            // 嵌套数组
+            if let Some(arr) = obj.get("images").and_then(|d| d.as_array()) {
+                if let Some(first) = arr.first() {
+                    if let Some(u) = first.as_str() { return Some(u.to_string()); }
+                    if let Some(u) = first.get("url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
                 }
             }
         }
     }
+    // 4. 顶层 url
+    if let Some(u) = v.get("url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+    None
+}
 
-    let err_msg = json.get("message").and_then(|m| m.as_str()).unwrap_or("响应无图片数据");
-    Err(err_msg.to_string())
+/// 下载墨行 URL 转换为前端可用的结果
+async fn download_url_to_result(url: &str, model_label: &str) -> Result<ImageGenerateResult, String> {
+    match download_image_to_b64(url).await {
+        Ok(b64) => {
+            println!("[image_generate][{}] ✅ 下载成功, b64长度={}", model_label, b64.len());
+            Ok(ImageGenerateResult { success: true, b64_data: Some(b64), error: None })
+        }
+        Err(e) => {
+            // 下载失败，回退把 URL 给前端
+            println!("[image_generate][{}] 下载失败: {}, 返回URL让前端兜底", model_label, e);
+            Ok(ImageGenerateResult { success: true, b64_data: None, error: Some(format!("url:{}", url)) })
+        }
+    }
+}
+
+/// v5.5.20 T6: 墨行 Banana2（Gemini-3.1-Flash-Image-Preview）
+/// 文生图 size=1k, aspect_ratio=16:9；图生图额外携带 image 字段
+async fn try_moxing_banana2(prompt: &str, image_url: Option<&str>) -> Result<ImageGenerateResult, String> {
+    let mut body = serde_json::json!({
+        "model": "Gemini-3.1-Flash-Image-Preview",
+        "capability": "image_generation",
+        "prompt": prompt,
+        "size": "1k",
+        "aspect_ratio": "16:9",
+        "response_format": "url",
+    });
+    if let Some(u) = image_url {
+        body["image"] = serde_json::Value::String(u.to_string());
+    }
+    submit_and_poll_moxing(body, "Banana2").await
 }
 
 /// 下载图片URL并转为base64
@@ -806,46 +920,20 @@ async fn download_image_to_b64(url: &str) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
-/// 调用 apiyi gpt-image-2 (images/generations 端点)
-async fn try_api_gpt_image_2(prompt: &str, size: &str) -> Result<ImageGenerateResult, String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(180))
-        .build()
-        .map_err(|e| format!("HTTP客户端失败: {}", e))?;
-
-    let body = serde_json::json!({
-        "model": "gpt-image-2",
+/// v5.5.20 T6: 墨行 Seedream4.5（doubao-seedream-4-5-251128）
+/// 文生图 size=1728x2304；图生图额外携带 image 字段
+async fn try_moxing_seedream(prompt: &str, image_url: Option<&str>) -> Result<ImageGenerateResult, String> {
+    let mut body = serde_json::json!({
+        "model": "doubao-seedream-4-5-251128",
+        "capability": "image_generation",
         "prompt": prompt,
-        "n": 1,
-        "size": size,
+        "size": "1728x2304",
+        "response_format": "url",
     });
-
-    let resp = client.post("https://api.apiyi.com/v1/images/generations")
-        .header("Authorization", "Bearer sk-ws6foW8LNsQYZYaDA60d274240A245489bC6D594Fb6eB7F4")
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("请求失败: {}", e))?;
-
-    let err_status = resp.status();
-    let json: serde_json::Value = resp.json().await.map_err(|e| format!("解析失败: {}", e))?;
-
-    if !err_status.is_success() {
-        let msg = json.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or("未知错误");
-        return Err(msg.to_string());
+    if let Some(u) = image_url {
+        body["image"] = serde_json::Value::String(u.to_string());
     }
-
-    // images/generations 返回 data[0].b64_json 或 url
-    if let Some(data) = json.get("data").and_then(|d| d.as_array()).and_then(|a| a.first()) {
-        if let Some(b64) = data.get("b64_json").and_then(|b| b.as_str()) {
-            return Ok(ImageGenerateResult { success: true, b64_data: Some(b64.to_string()), error: None });
-        }
-        if let Some(url) = data.get("url").and_then(|u| u.as_str()) {
-            return Ok(ImageGenerateResult { success: true, b64_data: None, error: Some(format!("url:{}", url)) });
-        }
-    }
-    Err("响应无图片数据".to_string())
+    submit_and_poll_moxing(body, "Seedream4.5").await
 }
 
 /// 🔧 B052: 图片设计专家数据持久化 — 保存品牌档案和Logo到本地文件系统

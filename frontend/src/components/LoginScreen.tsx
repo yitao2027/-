@@ -1,16 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { sendSmsCode, loginWithCode, setJwtToken } from '../services/pointsApi';
+import { VALID_INVITE_CODES, INVITE_CODE_PATTERN } from '../data/INVITE_CODES';
 
 interface LoginScreenProps {
   onLogin: () => void;
 }
 
-// 🔑 有效邀请码列表（MVP本地模式，后续对接后端API后移除）
-const VALID_INVITE_CODES = [
-  'SHAOZICLAW2026',
-  // 宋宣可在此添加更多邀请码，格式：SCL-XXXX-XXXX
-];
+// 🔑 有效邀请码集合（v5.5.20：500 个 11 位带校验码，从 INVITE_CODES.ts 加载）
+const VALID_CODE_SET = new Set<string>(VALID_INVITE_CODES);
 
 export default function LoginScreen({ onLogin }: LoginScreenProps) {
   const [email, setEmail] = useState('');
@@ -45,14 +43,14 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     }
   }, []);
 
-  // 实时校验邀请码（前端即时反馈）
+  // 实时校验邀请码（前端即时反馈，11 位带校验码）
   useEffect(() => {
-    if (!inviteCode || inviteCode.trim().length < 4) {
+    if (!inviteCode || inviteCode.trim().length < 11) {
       setCodeStatus('idle');
       return;
     }
     const upper = inviteCode.trim().toUpperCase();
-    if (VALID_INVITE_CODES.includes(upper) || upper.startsWith('SCL-')) {
+    if (INVITE_CODE_PATTERN.test(upper) && VALID_CODE_SET.has(upper)) {
       setCodeStatus('valid');
     } else {
       setCodeStatus('invalid');
@@ -119,12 +117,12 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     if (!email) { setError('请输入邮箱地址'); return; }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { setError('请输入有效的邮箱地址'); return; }
     if (!password) { setError('请输入密码'); return; }
-    if (!inviteCode || inviteCode.trim().length < 4) { setError('请输入邀请码（必填）'); return; }
+    if (!inviteCode || inviteCode.trim().length !== 11) { setError('请输入 11 位邀请码（必填）'); return; }
     if (!agreed) { setError('请先阅读并同意用户协议'); return; }
     
     // 校验邀请码
     const code = inviteCode.trim().toUpperCase();
-    if (!VALID_INVITE_CODES.includes(code) && !code.startsWith('SCL-')) {
+    if (!INVITE_CODE_PATTERN.test(code) || !VALID_CODE_SET.has(code)) {
       setError('邀请码无效，请联系发放人获取正确邀请码');
       return;
     }
@@ -360,7 +358,8 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
                     type="text"
                     value={inviteCode}
                     onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-                    placeholder="SCL-XXXX-XXXX 或 SHAOZICLAW2026"
+                    placeholder="请输入 11 位邀请码"
+                    maxLength={11}
                     className={`w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/[0.04] text-sm tracking-wider uppercase font-mono text-center placeholder:text-gray-600 focus:outline-none transition-all duration-200 ${
                       codeStatus === 'valid'
                         ? 'border-green-500/50 bg-green-500/[0.04] text-green-300'
@@ -377,10 +376,10 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
                     邀请码有效
                   </p>
                 )}
-                {inviteCode && inviteCode.length >= 4 && codeStatus === 'invalid' && (
+                {inviteCode && inviteCode.length >= 11 && codeStatus === 'invalid' && (
                   <p className="text-[11px] text-red-400 mt-1 ml-1">邀请码无效，请联系发放人获取正确邀请码</p>
                 )}
-                {(!inviteCode || inviteCode.length < 4) && (
+                {(!inviteCode || inviteCode.length < 11) && (
                   <p className="text-[11px] text-gray-600 mt-1 ml-1">
                     没有邀请码？发送邮件至 <button type="button" className="text-[#57CC86]/70 hover:text-[#57CC86]" onClick={() => window.open('mailto:songxuan@shaoziclaw.com?subject=勺子Claw邀请码申请', '_blank')}>songxuan@shaoziclaw.com</button> 申请
                   </p>

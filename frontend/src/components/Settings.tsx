@@ -24,10 +24,10 @@ const MODEL_PROVIDERS = [
 
 // 内置预装模型（v5.1.0: 统一走墨行 Moxing API，含多模态能力标签）
 const BUILTIN_MODELS = [
-  { id: 'deepseek-v4', name: '墨行 · DeepSeek V4', provider: 'moxing', icon: '🔵', desc: '默认旗舰 · 深度推理 ✅', isCustomEndpoint: true, apiBase: 'https://www.moxing.pro', apiKey: 'sk-mxai-***（服务端内置）', capabilities: ['text', 'code'] as const },
-  { id: 'glm-5.1', name: '墨行 · GLM-5.1', provider: 'moxing', icon: '🟢', desc: '推理旗舰 · 智谱文本 ✅', isCustomEndpoint: true, apiBase: 'https://www.moxing.pro', apiKey: 'sk-mxai-***（服务端内置）', capabilities: ['text', 'code'] as const },
-  { id: 'kimi-k2.5', name: '墨行 · Kimi K2.5', provider: 'moxing', icon: '🟣', desc: '视觉识别 · 月之暗面 ✅', isCustomEndpoint: true, apiBase: 'https://www.moxing.pro', apiKey: 'sk-mxai-***（服务端内置）', capabilities: ['text', 'code', 'image'] as const },
-  { id: 'seedance-2.0', name: '墨行 · Seedance 2.0', provider: 'moxing', icon: '🟡', desc: '视频生成 · 豆包 ✅', isCustomEndpoint: true, apiBase: 'https://www.moxing.pro', apiKey: 'sk-mxai-***（服务端内置）', capabilities: ['video'] as const },
+  { id: 'deepseek-v4', name: 'DeepSeek V4', provider: 'moxing', icon: '🔵', desc: '默认旗舰 · 深度推理 ✅', isCustomEndpoint: true, apiBase: 'https://www.moxing.pro', apiKey: 'sk-mxai-***（服务端内置）', capabilities: ['text', 'code'] as const },
+  { id: 'glm-5.1', name: 'GLM-5.1', provider: 'moxing', icon: '🟢', desc: '推理旗舰 · 智谱文本 ✅', isCustomEndpoint: true, apiBase: 'https://www.moxing.pro', apiKey: 'sk-mxai-***（服务端内置）', capabilities: ['text', 'code'] as const },
+  { id: 'kimi-k2.5', name: 'Kimi K2.5', provider: 'moxing', icon: '🟣', desc: '视觉识别 · 月之暗面 ✅', isCustomEndpoint: true, apiBase: 'https://www.moxing.pro', apiKey: 'sk-mxai-***（服务端内置）', capabilities: ['text', 'code', 'image'] as const },
+  { id: 'seedance-2.0', name: 'Seedance 2.0', provider: 'moxing', icon: '🟡', desc: '视频生成 · 豆包 ✅', isCustomEndpoint: true, apiBase: 'https://www.moxing.pro', apiKey: 'sk-mxai-***（服务端内置）', capabilities: ['video'] as const },
 ];
 
 // 自定义提供商预设（v5.0.0: 默认走墨行）

@@ -15,14 +15,38 @@ const getAuthHeaders = (): Record<string, string> => ({
 });
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      ...getAuthHeaders(),
-      ...options?.headers,
-    },
-  });
-  const json = await res.json();
+  // ⏱ 12s 超时 + 友好错误提示，避免后端故障时黑屏 "Failed to fetch"
+  const controller = new AbortController();
+  const timeoutMs = 12000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      headers: {
+        ...getAuthHeaders(),
+        ...options?.headers,
+      },
+      signal: controller.signal,
+    });
+  } catch (err: any) {
+    clearTimeout(timer);
+    // 区分超时 / 网络断开 / DNS 失败
+    if (err?.name === 'AbortError') {
+      throw new Error(`请求超时（${timeoutMs / 1000}秒），后端服务可能暂时不可用，请稍后再试`);
+    }
+    if (typeof err?.message === 'string' && /Failed to fetch|NetworkError|ERR_NAME_NOT_RESOLVED|ERR_INTERNET_DISCONNECTED/i.test(err.message)) {
+      throw new Error('无法连接服务器，请检查网络或稍后再试（api.shaoziclaw.com 暂不可达）');
+    }
+    throw new Error(err?.message || '网络请求失败');
+  }
+  clearTimeout(timer);
+  let json: any;
+  try {
+    json = await res.json();
+  } catch {
+    throw new Error(`服务端响应异常 (HTTP ${res.status})`);
+  }
   if (json.code !== 0 && json.code !== undefined) {
     throw new Error(json.message || json.msg || `API error ${res.status}`);
   }
