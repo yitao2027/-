@@ -692,8 +692,8 @@ async fn image_generate(prompt: String, size: Option<String>) -> Result<ImageGen
     let _ = size; // 墨行两模型各自有固定size，不再使用前端传入值
     let image_url: Option<String> = None; // 文生图模式（图生图后续单独命令暴露）
 
-    // 🔧 并行尝试两个墨行生图模型，取最快成功的结果
-    println!("[image_generate] 并行启动2个墨行生图模型: prompt长度={}", prompt.len());
+    // 🔧 并行尝试两个墨行生图模型,取最快成功的结果
+    log::info!("[IMAGE_GEN] 并行启动2个墨行生图模型: prompt长度={}", prompt.len());
     let start = std::time::Instant::now();
 
     let (r1, r2) = tokio::join!(
@@ -703,11 +703,11 @@ async fn image_generate(prompt: String, size: Option<String>) -> Result<ImageGen
 
     // 按优先级返回第一个成功的结果
     if let Ok(r) = r1 {
-        println!("[image_generate] ✅ 墨行Banana2 成功，耗时{:?}", start.elapsed());
+        log::info!("[IMAGE_GEN] ✅ 墨行Banana2 成功,耗时{:?}", start.elapsed());
         return Ok(r);
     }
     if let Ok(r) = r2 {
-        println!("[image_generate] ✅ 墨行Seedream4.5 成功，耗时{:?}", start.elapsed());
+        log::info!("[IMAGE_GEN] ✅ 墨行Seedream4.5 成功,耗时{:?}", start.elapsed());
         return Ok(r);
     }
 
@@ -734,7 +734,7 @@ async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> R
 
     // ① 提交任务
     let submit_url = format!("{}/media/generations", MOXING_API_BASE);
-    println!("[image_generate][{}] 提交任务: {}", model_label, submit_url);
+    log::info!("[IMAGE_GEN][{}] 提交任务: {}", model_label, submit_url);
     let resp = client.post(&submit_url)
         .header("Authorization", format!("Bearer {}", MOXING_API_KEY))
         .header("Content-Type", "application/json")
@@ -752,14 +752,14 @@ async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> R
             .and_then(|e| if e.is_string() { e.as_str() } else { e.get("message").and_then(|m| m.as_str()) })
             .or_else(|| json.get("message").and_then(|m| m.as_str()))
             .unwrap_or("未知错误");
-        println!("[image_generate][{}] 提交HTTP错误 {}: {}", model_label, status, err_msg);
+        log::info!("[IMAGE_GEN][{}] 提交HTTP错误 {}: {}", model_label, status, err_msg);
         return Err(format!("提交HTTP {}: {}", status, err_msg));
     }
 
-    // ② 提取 task_id（兼容多种返回字段）
-    // 优先级：根 data 立即返回 url -> task_id -> id
+    // ② 提取 task_id(兼容多种返回字段)
+    // 优先级:根 data 立即返回 url -> task_id -> id
     if let Some(direct_url) = extract_image_url_from_moxing(&json) {
-        println!("[image_generate][{}] 同步直返URL，下载中...", model_label);
+        log::info!("[IMAGE_GEN][{}] 同步直返URL,下载中...", model_label);
         return download_url_to_result(&direct_url, model_label).await;
     }
 
@@ -770,7 +770,7 @@ async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> R
         .ok_or_else(|| format!("响应未携带task_id: {}", json))?
         .to_string();
 
-    println!("[image_generate][{}] 取得task_id={}, 开始轮询", model_label, task_id);
+    log::info!("[IMAGE_GEN][{}] 取得task_id={}, 开始轮询", model_label, task_id);
 
     // ③ 轮询任务状态（最多 30 次，每次 2s = 60s）
     let poll_url = format!("{}/media/tasks/{}", MOXING_API_BASE, task_id);
@@ -785,7 +785,7 @@ async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> R
         let r = match r {
             Ok(r) => r,
             Err(e) => {
-                println!("[image_generate][{}] 轮询#{} 网络错误: {}", model_label, attempt, e);
+                log::info!("[IMAGE_GEN][{}] 轮询#{} 网络错误: {}", model_label, attempt, e);
                 continue;
             }
         };
@@ -794,13 +794,13 @@ async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> R
         let pj: serde_json::Value = match r.json().await {
             Ok(v) => v,
             Err(e) => {
-                println!("[image_generate][{}] 轮询#{} 解析错误: {}", model_label, attempt, e);
+                log::info!("[IMAGE_GEN][{}] 轮询#{} 解析错误: {}", model_label, attempt, e);
                 continue;
             }
         };
 
         if !st.is_success() {
-            println!("[image_generate][{}] 轮询#{} HTTP {}: {}", model_label, attempt, st, pj);
+            log::info!("[IMAGE_GEN][{}] 轮询#{} HTTP {}: {}", model_label, attempt, st, pj);
             continue;
         }
 
@@ -820,12 +820,12 @@ async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> R
 
         // 尝试提取 URL — 部分模型完成时不显式返回 status
         if let Some(url) = extract_image_url_from_moxing(&pj) {
-            println!("[image_generate][{}] 轮询#{} 完成，下载图片", model_label, attempt);
+            log::info!("[IMAGE_GEN][{}] 轮询#{} 完成,下载图片", model_label, attempt);
             return download_url_to_result(&url, model_label).await;
         }
 
         if attempt % 5 == 0 {
-            println!("[image_generate][{}] 轮询#{} 状态={} 仍在处理", model_label, attempt, state);
+            log::info!("[IMAGE_GEN][{}] 轮询#{} 状态={} 仍在处理", model_label, attempt, state);
         }
     }
 
@@ -871,12 +871,12 @@ fn extract_image_url_from_moxing(v: &serde_json::Value) -> Option<String> {
 async fn download_url_to_result(url: &str, model_label: &str) -> Result<ImageGenerateResult, String> {
     match download_image_to_b64(url).await {
         Ok(b64) => {
-            println!("[image_generate][{}] ✅ 下载成功, b64长度={}", model_label, b64.len());
+            log::info!("[IMAGE_GEN][{}] ✅ 下载成功, b64长度={}", model_label, b64.len());
             Ok(ImageGenerateResult { success: true, b64_data: Some(b64), error: None })
         }
         Err(e) => {
-            // 下载失败，回退把 URL 给前端
-            println!("[image_generate][{}] 下载失败: {}, 返回URL让前端兜底", model_label, e);
+            // 下载失败,回退把 URL 给前端
+            log::info!("[IMAGE_GEN][{}] 下载失败: {}, 返回URL让前端兜底", model_label, e);
             Ok(ImageGenerateResult { success: true, b64_data: None, error: Some(format!("url:{}", url)) })
         }
     }

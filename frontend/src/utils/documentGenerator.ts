@@ -28,14 +28,16 @@ import { writeFile } from '@tauri-apps/plugin-fs';
 
 // ============================================================
 // 🔧 v5.5.13 (B093): 分块异步 base64 编码工具
-// 每 64KB 一块，每块之间让出主线程（requestAnimationFrame），
-// 避免长文档导出时 UI 卡死。
+// 🔧 v5.5.21 (Bug#4 P0-B): 改用 FileReader.readAsDataURL 原生异步,
+// 解决 chunks.join('') + btoa() 在大文档下仍同步阻塞主线程的问题。
+// FileReader 是浏览器原生的真异步API,通过事件循环调度,不会阻塞 UI。
 // ============================================================
 
 async function uint8ArrayToBase64Async(data: Uint8Array): Promise<string> {
-  const CHUNK_SIZE = 65536; // 64KB per chunk
-  if (data.length <= CHUNK_SIZE) {
-    // 小文件直接同步编码，无需分块
+  const SMALL_THRESHOLD = 65536; // 64KB 以下走快速同步路径
+
+  // 小文件直接同步编码,避免 FileReader 的事件开销
+  if (data.length <= SMALL_THRESHOLD) {
     let binary = '';
     for (let i = 0; i < data.length; i++) {
       binary += String.fromCharCode(data[i]);
@@ -43,24 +45,31 @@ async function uint8ArrayToBase64Async(data: Uint8Array): Promise<string> {
     return btoa(binary);
   }
 
-  // 大文件分块编码
-  const chunks: string[] = [];
-  let offset = 0;
-  while (offset < data.length) {
-    const end = Math.min(offset + CHUNK_SIZE, data.length);
-    const slice = data.subarray(offset, end);
-    let binary = '';
-    for (let i = 0; i < slice.length; i++) {
-      binary += String.fromCharCode(slice[i]);
-    }
-    chunks.push(binary);
-    offset = end;
-    // 每块之间让出主线程，保持 UI 响应
-    if (offset < data.length) {
-      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-    }
-  }
-  return btoa(chunks.join(''));
+  // 大文件用 FileReader 原生异步路径
+  // FileReader.readAsDataURL 在浏览器后台线程做编码,主线程不阻塞
+  return new Promise<string>((resolve, reject) => {
+    const blob = new Blob([data]);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const result = reader.result as string;
+        // result 格式: "data:application/octet-stream;base64,XXXX..."
+        // 截掉 data URL 前缀,只保留 base64 部分
+        const commaIdx = result.indexOf(',');
+        if (commaIdx < 0) {
+          reject(new Error('FileReader result missing comma separator'));
+          return;
+        }
+        resolve(result.substring(commaIdx + 1));
+      } catch (e) {
+        reject(e);
+      }
+    };
+    reader.onerror = () => {
+      reject(reader.error || new Error('FileReader unknown error'));
+    };
+    reader.readAsDataURL(blob);
+  });
 }
 
 // ============================================================
