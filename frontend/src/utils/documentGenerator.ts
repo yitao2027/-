@@ -27,6 +27,43 @@ import { save } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 
 // ============================================================
+// 🔧 v5.5.13 (B093): 分块异步 base64 编码工具
+// 每 64KB 一块，每块之间让出主线程（requestAnimationFrame），
+// 避免长文档导出时 UI 卡死。
+// ============================================================
+
+async function uint8ArrayToBase64Async(data: Uint8Array): Promise<string> {
+  const CHUNK_SIZE = 65536; // 64KB per chunk
+  if (data.length <= CHUNK_SIZE) {
+    // 小文件直接同步编码，无需分块
+    let binary = '';
+    for (let i = 0; i < data.length; i++) {
+      binary += String.fromCharCode(data[i]);
+    }
+    return btoa(binary);
+  }
+
+  // 大文件分块编码
+  const chunks: string[] = [];
+  let offset = 0;
+  while (offset < data.length) {
+    const end = Math.min(offset + CHUNK_SIZE, data.length);
+    const slice = data.subarray(offset, end);
+    let binary = '';
+    for (let i = 0; i < slice.length; i++) {
+      binary += String.fromCharCode(slice[i]);
+    }
+    chunks.push(binary);
+    offset = end;
+    // 每块之间让出主线程，保持 UI 响应
+    if (offset < data.length) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    }
+  }
+  return btoa(chunks.join(''));
+}
+
+// ============================================================
 // Markdown 解析器 — 将 markdown 拆解为结构化块
 // ============================================================
 
@@ -401,17 +438,21 @@ export async function exportToDocx(title: string, markdown: string): Promise<str
       sections: [{ children }],
     });
 
-    // 🔧 v5.3.3: 增加详细日志诊断导出失败原因
+    // 🔧 v5.5.13 (B093): 改用 Packer.toBlob + blob.arrayBuffer，
+    // 去掉 toBase64String → atob → 循环转 Uint8Array 的冗余往返；
+    // 长文档时这套同步操作会锁死主线程导致前端卡死。
+    // toBlob 在浏览器环境是原生异步的，比 toBuffer 更稳定（不依赖 Buffer polyfill）。
     console.log(`[DocxExport] 开始导出, title=${title}, blocks=${blocks.length}`);
-    const base64 = await DocxPacker.toBase64String(doc);
-    console.log(`[DocxExport] Packer返回base64: ${base64 ? base64.length + '字符' : 'NULL'}`);
-    if (!base64 || base64.length < 10) {
-      throw new Error('DocxPacker.toBase64String返回空内容，可能doc数据构建失败');
+    // 让出一帧，确保 loading UI 能渲染上去再开始打包
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    const blob = await DocxPacker.toBlob(doc);
+    console.log(`[DocxExport] Packer.toBlob 返回 size=${blob.size}`);
+    if (!blob || blob.size < 10) {
+      throw new Error('DocxPacker.toBlob 返回空内容，可能 doc 数据构建失败');
     }
-    const binaryStr = atob(base64);
-    const bytes = new Uint8Array(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-    console.log(`[DocxExport] 生成 ${bytes.length} 字节，调用 saveFile...`);
+    const arrayBuffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    console.log(`[DocxExport] 转 Uint8Array 完成 ${bytes.length} 字节`);
     return await saveFile(bytes, title, '.docx');
   } catch (err) {
     console.error('[DocumentGenerator] DOCX export error:', err);
@@ -822,14 +863,9 @@ async function saveFile(data: Uint8Array, title: string, ext: string): Promise<s
   console.log(`[DocumentGenerator] Save path: ${filePath}, writing ${data.length} bytes via Rust...`);
   let writtenPath: string | null = null;
   try {
-    // 🔧 v5.3.6: 用base64传数据(避免IPC传巨大JSON数组)
+    // 🔧 v5.5.13 (B093): 分块异步 base64 编码，避免长数据锁死主线程
     const { invoke } = await import('@tauri-apps/api/core');
-    // Uint8Array → base64
-    let binary = '';
-    for (let i = 0; i < data.length; i++) {
-      binary += String.fromCharCode(data[i]);
-    }
-    const dataBase64 = btoa(binary);
+    const dataBase64 = await uint8ArrayToBase64Async(data);
     console.log(`[DocumentGenerator] base64长度=${dataBase64.length}, 调用save_file_to_disk...`);
     invoke('log_frontend', { level: 'INFO', module: 'DocExport', msg: `保存路径: ${filePath}, base64: ${dataBase64.length}` }).catch(() => {});
     writtenPath = await invoke<string>('save_file_to_disk', {

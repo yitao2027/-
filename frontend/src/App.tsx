@@ -103,38 +103,28 @@ export default function App() {
 checkAuth()
   }, [])
 
-  // 🔧 v5.1.2: 首次启动自动下载知识库
+  // 🔧 v5.5.19: 知识库已随安装包内置，不再触发远程下载
+  // setup() 阶段会自动从 resources/knowledge-base 解包到 app_data_dir，
+  // RAG 引擎随后初始化。这里只在认证完成后刷新一次状态展示。
   useEffect(() => {
-    if (!authChecked) return; // 等认证检查完成
+    if (!authChecked) return;
     let cancelled = false;
 
-    async function autoDownloadKB() {
+    async function refreshKB() {
       try {
         const { invoke } = await import('@tauri-apps/api/core')
-        const status = await invoke<any>('get_kb_status')
-        if (status.initialized) return; // 已有知识库
-
-        // 首次启动，未初始化 → 自动下载
-        console.log('[App] 检测到知识库未初始化，5秒后自动下载...')
-        await new Promise(r => setTimeout(r, 5000))
+        // 给 setup 中的异步初始化留几秒
+        await new Promise(r => setTimeout(r, 2000))
         if (cancelled) return
-
-        const { Channel } = await import('@tauri-apps/api/core')
-        const channel = new Channel<{ progress: number; message: string }>()
-        channel.onmessage = (p) => {
-          console.log(`[KB自动下载] ${p.progress}% - ${p.message}`)
-        }
-
-        await invoke('download_kb_index', { onProgress: channel })
-        console.log('[App] ✅ 知识库自动下载完成')
-        // 刷新store中的状态
+        const status = await invoke<any>('get_kb_status')
+        console.log('[App] 知识库状态:', status)
         useAppStore.getState().refreshKbStatus()
       } catch (e) {
-        console.warn('[App] 知识库自动下载失败（用户可能取消了）:', e)
+        console.warn('[App] 刷新知识库状态失败:', e)
       }
     }
 
-    autoDownloadKB()
+    refreshKB()
     return () => { cancelled = true }
   }, [authChecked])
 

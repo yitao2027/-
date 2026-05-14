@@ -76,3 +76,15 @@ coverage/
 
 # ===== WorkBuddy 工作区元数据 =====
 .workbuddy/memory/
+
+# ===== KB 索引构建工具产物（不提交：本地缓存/日志/PID） =====
+tools/.kb_cache/
+tools/__pycache__/
+tools/.kb_build_pid
+tools/build_kb.out.log
+tools/build_kb.err.log
+tools/*.log
+
+# ===== KB 索引大文件（随安装包发布，不进 git 历史） =====
+frontend/src-tauri/resources/knowledge-base/kb_vectors.lance.tar.gz
+frontend/src-tauri/resources/knowledge-base/kb_vectors.lance/

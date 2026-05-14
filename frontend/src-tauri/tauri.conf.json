@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "勺子Claw",
-  "version": "5.5.17",
+  "version": "5.5.19",
   "identifier": "com.shaoziclaw.app",
   "build": {
     "frontendDist": "../dist",
@@ -44,7 +44,8 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "../dist"
+      "../dist",
+      "resources/knowledge-base/**/*"
     ],
     "windows": {
       "webviewInstallMode": {

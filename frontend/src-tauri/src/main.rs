@@ -26,6 +26,7 @@ mod behavior_tracker; // 📊 行为模式追踪模块（v5.2新增）
 mod knowledge_evolution; // 🌱 知识演进模块（v5.2新增）
 mod claw_log; // 📋 统一日志系统（v5.2.1新增）
 mod local_fs; // 🦞 v5.3.9: 龙虾级本地文件系统权限
+mod resource_unpacker; // 📦 v5.5.19: 安装包资源解包器（知识库随包打包）
 
 pub use firecrawl_opinion::{firecrawl_status, firecrawl_search, firecrawl_scrape, firecrawl_deep};
 // ⏰ 定时任务 Commands
@@ -1383,6 +1384,11 @@ fn main() {
 
             // 📚 初始化RAG知识库系统（v5.1）
             {
+                // 🦞 v5.5.19: 先把打包资源解压到 app_data_dir，再初始化 RAG
+                if let Err(e) = resource_unpacker::unpack_all(app.handle()) {
+                    eprintln!("⚠️ 资源解包失败（不影响启动）: {}", e);
+                }
+
                 let data_dir = app.handle()
                     .path()
                     .app_data_dir()
