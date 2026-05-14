@@ -21,6 +21,7 @@
     "fs:allow-home-read",
     "fs:allow-desktop-write",
     "fs:allow-desktop-read",
-    "shell:allow-open"
+    "shell:allow-open",
+    "log:default"
   ]
 }

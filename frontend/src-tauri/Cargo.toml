@@ -29,6 +29,8 @@ lazy_static = "1.4"
 lancedb = "0.27"
 arrow-array = "57"
 arrow-schema = "57"
+log = "0.4"
+tauri-plugin-log = "2"
 
 [profile.dev]
 incremental = true
