@@ -320,7 +320,8 @@ pub async fn browser_scrape(url: &str) -> Result<BrowserScrapeResult, String> {
             Ok::<(String, String, String), String>((url_owned, title, text))
         })
     ).await {
-        Ok(Ok((url_res, title, text))) => {
+        // timeout OK + spawn_blocking OK + 业务 OK
+        Ok(Ok(Ok((url_res, title, text)))) => {
             let is_success = !text.is_empty();
             Ok(BrowserScrapeResult {
                 url: url_res,
@@ -330,7 +331,8 @@ pub async fn browser_scrape(url: &str) -> Result<BrowserScrapeResult, String> {
                 error: if !is_success { Some("未能提取页面内容".to_string()) } else { None },
             })
         }
-        Ok(Err(e)) => {
+        // timeout OK + spawn_blocking OK + 业务 Err
+        Ok(Ok(Err(e))) => {
             Ok(BrowserScrapeResult {
                 url: url.to_string(),
                 title: String::new(),
@@ -339,6 +341,17 @@ pub async fn browser_scrape(url: &str) -> Result<BrowserScrapeResult, String> {
                 error: Some(e),
             })
         }
+        // timeout OK + spawn_blocking panic/cancel (JoinError)
+        Ok(Err(e)) => {
+            Ok(BrowserScrapeResult {
+                url: url.to_string(),
+                title: String::new(),
+                text: String::new(),
+                success: false,
+                error: Some(format!("Playwright线程异常: {}", e)),
+            })
+        }
+        // timeout 超时
         Err(_) => {
             Ok(BrowserScrapeResult {
                 url: url.to_string(),
