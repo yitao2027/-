@@ -683,39 +683,76 @@ struct ImageGenerateResult {
 }
 
 /// 调用AI生图模型
-/// v5.5.20 T6: 全面切换到墨行异步task模式
-///   - Banana2 (Gemini-3.1-Flash-Image-Preview, 1k + 16:9)
-///   - Seedream4.5 (doubao-seedream-4-5-251128, 1728x2304)
+/// v5.5.23 Bug#4 修复: 实测墨行 succeeded payload 的 URL 在 result.primary_url / result.urls[0]
+///   - Banana2 (Gemini-3.1-Flash-Image-Preview, 1k + 16:9) 实测 ~16s
+///   - Seedream4.5 (doubao-seedream-4-5-251128, 1728x2304)  实测 ~75s
+/// 改用 select! 取最快成功，不再等所有完成；轮询扩到 180s
 /// 返回base64编码的PNG数据
 #[tauri::command]
 async fn image_generate(prompt: String, size: Option<String>) -> Result<ImageGenerateResult, String> {
     let _ = size; // 墨行两模型各自有固定size，不再使用前端传入值
-    let image_url: Option<String> = None; // 文生图模式（图生图后续单独命令暴露）
+    image_generate_inner(prompt, None).await
+}
 
-    // 🔧 并行尝试两个墨行生图模型,取最快成功的结果
-    log::info!("[IMAGE_GEN] 并行启动2个墨行生图模型: prompt长度={}", prompt.len());
+/// 图生图变体（暴露 reference_image_url 给前端）
+/// 用法：前端传一个 https URL（可走 ImagePicker 上传到墨行/COS拿到URL）
+#[tauri::command]
+async fn image_generate_with_ref(prompt: String, reference_image_url: String) -> Result<ImageGenerateResult, String> {
+    image_generate_inner(prompt, Some(reference_image_url)).await
+}
+
+async fn image_generate_inner(prompt: String, image_url: Option<String>) -> Result<ImageGenerateResult, String> {
+    log::info!("[IMAGE_GEN] 并行启动2个墨行生图模型: prompt长度={}, 图生图={}",
+        prompt.len(), image_url.is_some());
     let start = std::time::Instant::now();
+    let url_ref = image_url.as_deref();
 
-    let (r1, r2) = tokio::join!(
-        try_moxing_banana2(&prompt, image_url.as_deref()),
-        try_moxing_seedream(&prompt, image_url.as_deref())
-    );
+    // 🔧 v5.5.23: 改 select! 取最快胜出（不再 join! 阻塞等所有）
+    // 任一成功即返回；都失败时聚合错误
+    let banana = try_moxing_banana2(&prompt, url_ref);
+    let seedream = try_moxing_seedream(&prompt, url_ref);
+    tokio::pin!(banana);
+    tokio::pin!(seedream);
 
-    // 按优先级返回第一个成功的结果
-    if let Ok(r) = r1 {
-        log::info!("[IMAGE_GEN] ✅ 墨行Banana2 成功,耗时{:?}", start.elapsed());
-        return Ok(r);
+    let mut banana_err: Option<String> = None;
+    let mut seedream_err: Option<String> = None;
+
+    loop {
+        tokio::select! {
+            r = &mut banana, if banana_err.is_none() => {
+                match r {
+                    Ok(ok) => {
+                        log::info!("[IMAGE_GEN] ✅ Banana2 胜出,耗时{:?}", start.elapsed());
+                        return Ok(ok);
+                    }
+                    Err(e) => {
+                        log::warn!("[IMAGE_GEN] Banana2 失败: {}", e);
+                        banana_err = Some(e);
+                        if seedream_err.is_some() { break; }
+                    }
+                }
+            }
+            r = &mut seedream, if seedream_err.is_none() => {
+                match r {
+                    Ok(ok) => {
+                        log::info!("[IMAGE_GEN] ✅ Seedream4.5 胜出,耗时{:?}", start.elapsed());
+                        return Ok(ok);
+                    }
+                    Err(e) => {
+                        log::warn!("[IMAGE_GEN] Seedream4.5 失败: {}", e);
+                        seedream_err = Some(e);
+                        if banana_err.is_some() { break; }
+                    }
+                }
+            }
+        }
     }
-    if let Ok(r) = r2 {
-        log::info!("[IMAGE_GEN] ✅ 墨行Seedream4.5 成功,耗时{:?}", start.elapsed());
-        return Ok(r);
-    }
 
-    let errors = vec![
-        format!("墨行Banana2: {}", r1.err().unwrap_or_default()),
-        format!("墨行Seedream4.5: {}", r2.err().unwrap_or_default()),
-    ];
-    Err(format!("所有图片模型失败: {}", errors.join(" | ")))
+    Err(format!(
+        "所有图片模型失败 | Banana2: {} | Seedream4.5: {}",
+        banana_err.unwrap_or_default(),
+        seedream_err.unwrap_or_default()
+    ))
 }
 
 /// 墨行 API key（与 compress_memory 共用）
@@ -723,12 +760,13 @@ const MOXING_API_KEY: &str = "sk-mxai-3d96e98c6a64adcde222b8020e9ab42979fd17a30a
 const MOXING_API_BASE: &str = "https://www.moxing.pro/v1";
 
 /// 提交墨行异步任务并轮询结果
+/// v5.5.23 Bug#4: 轮询扩到 90×2s=180s（实测 Seedream4.5 需要 ~75s 才 succeeded）
 /// 1) POST /media/generations 拿 task_id
-/// 2) 轮询 GET /media/tasks/<task_id> 直到完成（最多 30 次 × 2s = 60s）
+/// 2) 轮询 GET /media/tasks/<task_id> 直到完成（最多 90 次 × 2s = 180s）
 /// 3) 提取图片 URL，下载并转为 base64
 async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> Result<ImageGenerateResult, String> {
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(90)) // v5.5.23: 30→90，下载大图也走这条
         .build()
         .map_err(|e| format!("HTTP客户端失败: {}", e))?;
 
@@ -772,9 +810,10 @@ async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> R
 
     log::info!("[IMAGE_GEN][{}] 取得task_id={}, 开始轮询", model_label, task_id);
 
-    // ③ 轮询任务状态（最多 30 次，每次 2s = 60s）
+    // ③ 轮询任务状态（最多 90 次，每次 2s = 180s）
+    // v5.5.23: 实测 Seedream4.5 ~75s 才 succeeded，60s 不够
     let poll_url = format!("{}/media/tasks/{}", MOXING_API_BASE, task_id);
-    for attempt in 1..=30 {
+    for attempt in 1..=90 {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         let r = client.get(&poll_url)
@@ -829,16 +868,27 @@ async fn submit_and_poll_moxing(body: serde_json::Value, model_label: &str) -> R
         }
     }
 
-    Err("轮询超时(60s)".to_string())
+    Err("轮询超时(180s)".to_string())
 }
 
 /// 从墨行响应中尽力提取图片 URL（兼容多种结构）
+/// v5.5.23 Bug#4 修复: 实测墨行 succeeded payload 在 result.primary_url / result.urls[0]，
+/// 当前漏掉这两个字段是导致两模型都"轮询超时"的真根因
 fn extract_image_url_from_moxing(v: &serde_json::Value) -> Option<String> {
+    // 0. ★ 实测墨行 succeeded 真实路径: result.primary_url 或 result.urls[0]
+    if let Some(result) = v.get("result") {
+        if let Some(u) = result.get("primary_url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+        if let Some(arr) = result.get("urls").and_then(|d| d.as_array()) {
+            if let Some(first) = arr.first().and_then(|x| x.as_str()) { return Some(first.to_string()); }
+        }
+    }
+
     // 1. data: [{url}]
     if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
         if let Some(first) = arr.first() {
             if let Some(u) = first.get("url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
             if let Some(u) = first.get("image_url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+            if let Some(u) = first.get("primary_url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
         }
     }
     // 2. images: [{url}] 或 [string]
@@ -848,12 +898,20 @@ fn extract_image_url_from_moxing(v: &serde_json::Value) -> Option<String> {
             if let Some(u) = first.get("url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
         }
     }
-    // 3. result.url / output.url / data.url
+    // 3. result/output/data 内嵌 url 单数 / image_url / images 数组
     for key in ["result", "output", "data"] {
         if let Some(obj) = v.get(key) {
             if let Some(u) = obj.get("url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
             if let Some(u) = obj.get("image_url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
-            // 嵌套数组
+            if let Some(u) = obj.get("primary_url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+            // urls 数组（首项可能是字符串或对象）
+            if let Some(arr) = obj.get("urls").and_then(|d| d.as_array()) {
+                if let Some(first) = arr.first() {
+                    if let Some(u) = first.as_str() { return Some(u.to_string()); }
+                    if let Some(u) = first.get("url").and_then(|x| x.as_str()) { return Some(u.to_string()); }
+                }
+            }
+            // 嵌套 images 数组
             if let Some(arr) = obj.get("images").and_then(|d| d.as_array()) {
                 if let Some(first) = arr.first() {
                     if let Some(u) = first.as_str() { return Some(u.to_string()); }
@@ -1405,6 +1463,7 @@ fn main() {
             open_url,
             // 🎨 图片设计专家 Commands
             image_generate,
+            image_generate_with_ref,
             check_update,
             download_and_install_update,
             // ⏰ 定时任务 Commands (v4.7.0)

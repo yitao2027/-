@@ -14,10 +14,6 @@ import {
   HeadingLevel as DocxHeadingLevel,
   AlignmentType as DocxAlignment,
   Packer as DocxPacker,
-  Table as DocxTable,
-  TableRow as DocxTableRow,
-  TableCell as DocxTableCell,
-  WidthType as DocxWidthType,
   BorderStyle as DocxBorderStyle,
 } from 'docx';
 import PptxGenJS from 'pptxgenjs';
@@ -380,47 +376,45 @@ export async function exportToDocx(title: string, markdown: string): Promise<str
           break;
 
         case 'table':
+          // 🔧 v5.5.23 (Bug#3): 删除未使用的 DocxTableRow/DocxTableCell 构造死代码。
+          // 旧实现同时构造 tableRows（未 push）+ tableText paragraph，长表格双倍内存压力，
+          // 触发 Packer.toBlob 主线程长阻塞 → 用户感知"导出卡死"。
+          // 现仅按行生成轻量 paragraph，每行一段。
           if (block.rows && block.rows.length > 0) {
-            const tableRows = block.rows.map((cells, rowIdx) => {
-              return new DocxTableRow({
-                children: cells.map(cell => {
-                  return new DocxTableCell({
-                    width: { size: Math.floor(9000 / cells.length), type: DocxWidthType.DXA },
+            for (let rowIdx = 0; rowIdx < block.rows.length; rowIdx++) {
+              const cells = block.rows[rowIdx];
+              const isHeader = rowIdx === 0;
+              children.push(
+                new DocxParagraph({
+                  spacing: { before: isHeader ? 120 : 0, after: 60 },
+                  children: [
+                    new DocxTextRun({
+                      text: cells.join(' | '),
+                      size: isHeader ? 22 : 20,
+                      bold: isHeader,
+                      font: isHeader ? 'Microsoft YaHei' : 'Consolas',
+                      color: isHeader ? '1A7D4E' : '555555',
+                    }),
+                  ],
+                })
+              );
+              // 表头下加分隔线
+              if (isHeader && block.rows.length > 1) {
+                children.push(
+                  new DocxParagraph({
+                    spacing: { after: 60 },
                     children: [
-                      new DocxParagraph({
-                        children: [
-                          new DocxTextRun({
-                            text: cell,
-                            bold: rowIdx === 0,
-                            size: rowIdx === 0 ? 22 : 20,
-                            font: 'Microsoft YaHei',
-                            color: '333333',
-                          }),
-                        ],
+                      new DocxTextRun({
+                        text: '─'.repeat(Math.min(50, cells.join(' | ').length)),
+                        size: 18,
+                        color: 'AAAAAA',
+                        font: 'Consolas',
                       }),
                     ],
-                    shading: rowIdx === 0 ? { fill: '57CC86' } : rowIdx % 2 === 0 ? { fill: 'F8F9FA' } : undefined,
-                  });
-                }),
-              });
-            });
-            children.push(
-              new DocxParagraph({
-                children: [],
-                spacing: { before: 100 },
-              })
-            );
-            // docx Table 需要直接添加，不能用 Paragraph 包装
-            // 简化处理：跳过复杂表格，用文本替代
-            const tableText = block.rows.map(r => r.join(' | ')).join('\n');
-            children.push(
-              new DocxParagraph({
-                spacing: { after: 120 },
-                children: [
-                  new DocxTextRun({ text: tableText, size: 18, font: 'Consolas', color: '555555' }),
-                ],
-              })
-            );
+                  })
+                );
+              }
+            }
           }
           break;
       }
@@ -451,14 +445,22 @@ export async function exportToDocx(title: string, markdown: string): Promise<str
     // 去掉 toBase64String → atob → 循环转 Uint8Array 的冗余往返；
     // 长文档时这套同步操作会锁死主线程导致前端卡死。
     // toBlob 在浏览器环境是原生异步的，比 toBuffer 更稳定（不依赖 Buffer polyfill）。
+    // 🔧 v5.5.23 (Bug#3): 增加 toBlob 超时保护，超过 60s 视为卡死并抛错，避免 UI 无限挂起。
     console.log(`[DocxExport] 开始导出, title=${title}, blocks=${blocks.length}`);
     // 让出一帧，确保 loading UI 能渲染上去再开始打包
     await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-    const blob = await DocxPacker.toBlob(doc);
+    const blob = await Promise.race<Blob>([
+      DocxPacker.toBlob(doc),
+      new Promise<Blob>((_, reject) =>
+        setTimeout(() => reject(new Error('Packer.toBlob 超时(60s)，文档过大或含异常 markdown 表格，请精简内容后重试')), 60000)
+      ),
+    ]);
     console.log(`[DocxExport] Packer.toBlob 返回 size=${blob.size}`);
     if (!blob || blob.size < 10) {
       throw new Error('DocxPacker.toBlob 返回空内容，可能 doc 数据构建失败');
     }
+    // 再让一帧，避免后续 arrayBuffer 同步占用主线程
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     const arrayBuffer = await blob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     console.log(`[DocxExport] 转 Uint8Array 完成 ${bytes.length} 字节`);

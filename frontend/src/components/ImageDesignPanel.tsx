@@ -87,7 +87,15 @@ interface GeneratedImage {
   size: string                // 尺寸规格
   status: 'generating' | 'done' | 'error'
   error?: string
+  variant?: '简约' | '活力'   // 改动4：风格变体
+  withText?: boolean          // 改动6：是否带文字（false=纯图）
 }
+
+// 改动4：2个风格变体
+const STYLE_VARIANTS: { key: '简约' | '活力'; desc: string }[] = [
+  { key: '简约', desc: '克制构图、留白充足、字体简洁、突出菜品本身' },
+  { key: '活力', desc: '撞色对比、动感构图、视觉冲击强、烟火气浓' },
+]
 
 // ─── 常量数据 ───
 
@@ -218,7 +226,7 @@ export default function ImageDesignPanel() {
   const [brand, setBrand] = useState<BrandProfile>(savedBrand || {
     brandName: '', category: '', slogan: '',
     businessType: '', priceRange: '',
-    primaryColor: '#E11D48', secondaryColor: '#F43F5E',
+    primaryColor: '#57CC86', secondaryColor: '#34D399',
     stylePreference: 'appetizing', customStyleDesc: '',
   })
 
@@ -313,21 +321,47 @@ export default function ImageDesignPanel() {
     })
   }
 
-  // ── Step3: 原图上传 ──
-  const [originalImage, setOriginalImage] = useState<string | null>(null)  // base64原图
+  // ── Step3: 原图上传（支持多图） ──
+  const [originalImage, setOriginalImage] = useState<string | null>(null)  // 当前处理的base64原图
+  const [originalImages, setOriginalImages] = useState<{ name: string; b64: string }[]>([])  // 多图列表
   const [enhancedImage, setEnhancedImage] = useState<string | null>(null)  // AI修图后
   const [imageFileName, setImageFileName] = useState<string>('')
   const [isEnhancing, setIsEnhancing] = useState(false)
   const [enhanceElapsed, setEnhanceElapsed] = useState(0)   // 修图已耗时(秒)
   const [enhanceError, setEnhanceError] = useState<string | null>(null)   // 修图错误信息
   const [stepSkipped, setStepSkipped] = useState(false)    // 是否跳过了此步
+  const [showComboChoice, setShowComboChoice] = useState(false)  // 多图套餐选择弹窗
+  const [comboMode, setComboMode] = useState<'combo' | 'individual' | null>(null)  // 套餐/独立
+  const [currentImageIndex, setCurrentImageIndex] = useState(0)  // 当前处理第几张图
   const enhanceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const abortRef = useRef(false)  // 中断标记
+
+  // ── 每日生成上限（15张/天） ──
+  const DAILY_LIMIT = 15
+  const DAILY_COUNT_KEY = 'shaoziclaw_daily_gen_count'
+  const getDailyCount = (): number => {
+    try {
+      const stored = localStorage.getItem(DAILY_COUNT_KEY)
+      if (!stored) return 0
+      const { date, count } = JSON.parse(stored)
+      if (date !== new Date().toISOString().slice(0, 10)) return 0
+      return count
+    } catch { return 0 }
+  }
+  const incrementDailyCount = (n: number) => {
+    const today = new Date().toISOString().slice(0, 10)
+    const current = getDailyCount()
+    localStorage.setItem(DAILY_COUNT_KEY, JSON.stringify({ date: today, count: current + n }))
+  }
 
   // ── Step4: 文案 ──
   const [dishInfo, setDishInfo] = useState<DishInfo>({
     name: '', sellingPoints: '', promoText: '', price: '',
   })
+  // 改动6：是否同时输出"不带文字"版（纯图，便于后期自由排版）
+  const [generateNoText, setGenerateNoText] = useState(false)
+  // 改动4：是否同时输出 2 个风格变体（简约 + 活力）
+  const [generateBothVariants, setGenerateBothVariants] = useState(false)
 
   // ── Step5/6: 生成结果 ──
   const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([])
@@ -349,19 +383,44 @@ export default function ImageDesignPanel() {
     )
   }
 
-  // ─── 图片上传处理 ───
+  // ─── 图片上传处理（支持多图） ───
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setImageFileName(file.name)
+    const files = e.target.files
+    if (!files || files.length === 0) return
 
-    const reader = new FileReader()
-    reader.onload = () => {
-      const b64 = reader.result as string
-      setOriginalImage(b64)
-      setEnhancedImage(null) // 重置修图结果
+    // 重置状态
+    setEnhancedImage(null)
+    setComboMode(null)
+    setCurrentImageIndex(0)
+
+    if (files.length === 1) {
+      // 单图：保持原有逻辑
+      const file = files[0]
+      setImageFileName(file.name)
+      const reader = new FileReader()
+      reader.onload = () => {
+        const b64 = reader.result as string
+        setOriginalImage(b64)
+        setOriginalImages([{ name: file.name, b64 }])
+      }
+      reader.readAsDataURL(file)
+    } else {
+      // 多图：读取所有图片，弹出套餐/独立选择
+      const imgList: { name: string; b64: string }[] = []
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]
+        const b64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result as string)
+          reader.readAsDataURL(file)
+        })
+        imgList.push({ name: file.name, b64 })
+      }
+      setOriginalImages(imgList)
+      setOriginalImage(imgList[0].b64)
+      setImageFileName(`${imgList.length}张图片`)
+      setShowComboChoice(true) // 弹出选择弹窗
     }
-    reader.readAsDataURL(file)
   }
 
   // ─── Logo上传处理（修改2：仅支持SVG） ──
@@ -513,10 +572,28 @@ ${brand.brandName ? `品牌风格参考：${brand.brandName} - ${brand.stylePref
       return
     }
 
+    // 改动4 + 改动6：计算总任务数（位置 × 风格变体 × 文字版本）
+    const variantList: ('简约' | '活力')[] = generateBothVariants ? ['简约', '活力'] : ['简约']
+    const textList: boolean[] = generateNoText ? [true, false] : [true]
+    const totalTasks = selectedPositions.size * variantList.length * textList.length
+
+    // 每日上限校验（15 张/天）
+    const usedToday = getDailyCount()
+    if (usedToday + totalTasks > DAILY_LIMIT) {
+      alert(
+        `⚠️ 超出每日生成上限\n\n` +
+        `今日已生成：${usedToday} 张\n` +
+        `本次预计：${totalTasks} 张\n` +
+        `每日上限：${DAILY_LIMIT} 张\n\n` +
+        `请减少位置/风格/文字版本数量，或明日再试。`
+      )
+      return
+    }
+
     setIsGenerating(true)
     const results: GeneratedImage[] = []
 
-    // 遍历每个选中的位置（格式："platformKey:positionKey"）
+    // 笛卡尔积：位置 × 风格变体 × 带/不带文字
     for (const posFullKey of Array.from(selectedPositions)) {
       const [platKey, posKey] = posFullKey.split(':')
       const platConfig = PLATFORMS.find(p => p.key === platKey)
@@ -524,31 +601,37 @@ ${brand.brandName ? `品牌风格参考：${brand.brandName} - ${brand.stylePref
       const posConfig = platConfig.positions.find(p => p.key === posKey)
       if (!posConfig) continue
 
-      const imgId = `img_${Date.now()}_${posFullKey}`
-      results.push({
-        id: imgId,
-        platform: platKey,
-        platformLabel: `${platConfig.label} - ${posConfig.label}`,
-        b64Data: '',
-        prompt: '',
-        size: posConfig.size,
-        status: 'generating',
-      })
+      for (const variant of variantList) {
+        for (const withText of textList) {
+          const tag = `${variant}${withText ? '·有字' : '·无字'}`
+          const imgId = `img_${Date.now()}_${posFullKey}_${variant}_${withText ? 't' : 'n'}_${Math.random().toString(36).slice(2, 6)}`
+          results.push({
+            id: imgId,
+            platform: platKey,
+            platformLabel: `${platConfig.label} - ${posConfig.label} (${tag})`,
+            b64Data: '',
+            prompt: '',
+            size: posConfig.size,
+            status: 'generating',
+            variant,
+            withText,
+          })
+        }
+      }
     }
     setGeneratedImages(results)
 
-    // 逐个位置生成
+    // 逐个任务生成
     for (let i = 0; i < results.length; i++) {
       const item = results[i]
-      // 从id中解析 platformKey:positionKey
-      const idParts = item.id.split('_')
-      const posFullKey = idParts.length >= 3 ? idParts.slice(2).join('_') : ''
+      // 解析 platformKey:positionKey（id 格式：img_<ts>_<plat:pos>_<variant>_<t|n>_<rand>）
+      const parts = item.id.split('_')
+      const posFullKey = parts[2] || ''
       const [platKey, posKey] = posFullKey.split(':')
       const platConfig = PLATFORMS.find(p => p.key === platKey)
       const posConfig = platConfig?.positions.find(p => p.key === posKey)
 
       if (!platConfig || !posConfig) {
-        // 跳过无效位置
         setGeneratedImages(prev => prev.map(img =>
           img.id === item.id ? { ...img, status: 'error' as const, error: '位置配置不存在' } : img
         ))
@@ -556,14 +639,15 @@ ${brand.brandName ? `品牌风格参考：${brand.brandName} - ${brand.stylePref
       }
 
       const styleLabel = STYLE_PRESETS.find(s => s.key === brand.stylePreference)?.label.split(' ')[1] || ''
+      const variantDesc = STYLE_VARIANTS.find(v => v.key === item.variant)?.desc || ''
 
       const prompt = `为餐饮品牌「${brand.brandName || '美味餐厅'}」设计一张专业的${platConfig.category}平台配图：
 
 【菜品信息】
 菜名：${dishInfo.name}
 卖点：${dishInfo.sellingPoints}
-${dishInfo.promoText ? `文案：${dishInfo.promoText}` : ''}
-${dishInfo.price ? `价格：${dishInfo.price}` : ''}
+${dishInfo.promoText && item.withText ? `文案：${dishInfo.promoText}` : ''}
+${dishInfo.price && item.withText ? `价格：${dishInfo.price}` : ''}
 
 【设计规格】
 平台：${platConfig.label}
@@ -572,7 +656,19 @@ ${dishInfo.price ? `价格：${dishInfo.price}` : ''}
 风格：${styleLabel}${brand.customStyleDesc ? ' · ' + brand.customStyleDesc : ''}
 主色调：${brand.primaryColor}
 辅色调：${brand.secondaryColor}
-${brand.slogan ? `Slogan：${brand.slogan}` : ''}
+${brand.slogan && item.withText ? `Slogan：${brand.slogan}` : ''}
+
+【风格变体 — ${item.variant}版】
+${variantDesc}
+
+【文字版本】
+${item.withText
+  ? `- 在画面合适位置加入菜名/文案/价格等核心文字信息（中文为主，避免错别字）
+- 文字排版要符合${item.variant}风格的视觉调性
+- 文字与背景对比清晰可读`
+  : `- ⚠️ 严禁在画面任何位置出现任何文字、字符、Slogan、价格、品牌名（LOGO 除外）
+- 这是一张"纯图版"，画面只能有菜品和场景元素
+- 让构图、光影、留白本身讲故事，便于后期自由排版`}
 
 【位置特殊要求】
 - ${posConfig.requirement}
@@ -585,10 +681,14 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
 - 整体风格统一，有品牌辨识度和食欲感
 - 输出尺寸严格按 ${posConfig.size}px 生成
 - ${designPurposes.includes('重要产品上新') ? '突出新品感，吸引眼球' : ''}
-- ${designPurposes.includes('活动促销推广') ? '包含促销信息视觉引导' : ''}`
+- ${designPurposes.includes('活动促销推广') ? '包含促销信息视觉引导' : ''}
+${logoData ? `
+【品牌LOGO】
+- 必须将品牌LOGO设计在图片上（位置：右下角或左上角，不遮挡菜品主体）
+- LOGO保持原始比例和颜色，清晰可辨，大小适中（约占画面5%-8%面积）
+- 如果LOGO与背景对比度不足，添加半透明底衬确保可读性` : ''}`
 
       try {
-        // 根据位置比例选择最接近的API支持尺寸
         const apiSize = posConfig.ratio.startsWith('16')
           ? '1792x1024'
           : posConfig.ratio === '3:4' || posConfig.ratio.includes('竖版')
@@ -600,6 +700,9 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                 : '1024x1024'
 
         const result = await callGenerateAPI(prompt, apiSize)
+
+        // 改动4+6：成功一张就计 1 次额度
+        if (result.success) incrementDailyCount(1)
 
         setGeneratedImages(prev => prev.map(img =>
           img.id === item.id
@@ -720,8 +823,8 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
             }}>
             <div style={{
               width: 28, height: 28, borderRadius: '50%',
-              background: currentStep === step.num ? '#E11D48'
-                : currentStep > step.num ? '#E11D48' : '#E5E7EB',
+              background: currentStep === step.num ? '#57CC86'
+                : currentStep > step.num ? '#57CC86' : '#E5E7EB',
               color: '#fff', fontSize: '12px', fontWeight: 700,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'background 0.25s',
@@ -730,7 +833,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
             </div>
             <span style={{
               fontSize: '12.5px', fontWeight: currentStep === step.num ? 700 : 400,
-              color: currentStep === step.num ? '#E11D48' : '#6B7280',
+              color: currentStep === step.num ? '#57CC86' : '#6B7280',
               whiteSpace: 'nowrap',
             }}>{step.title}</span>
           </div>
@@ -758,13 +861,13 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
         border: '1px solid #F3F4F6',
       }}>
         <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#374151', margin: '0 0 14px' }}>
-          📋 基本信息<span style={{ color: '#E11D48' }}>*</span>
+          📋 基本信息<span style={{ color: '#57CC86' }}>*</span>
         </h3>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
           <div>
             <label style={{ fontSize: '11.5px', fontWeight: 600, color: '#6B7280', display: 'block', marginBottom: '4px' }}>
-              品牌名称<span style={{ color: '#E11D48' }}>*</span>
+              品牌名称<span style={{ color: '#57CC86' }}>*</span>
             </label>
             <input value={brand.brandName}
               onChange={(e) => setBrand({ ...brand, brandName: e.target.value })}
@@ -773,7 +876,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
           </div>
           <div>
             <label style={{ fontSize: '11.5px', fontWeight: 600, color: '#6B7280', display: 'block', marginBottom: '4px' }}>
-              经营品类<span style={{ color: '#E11D48' }}>*</span>
+              经营品类<span style={{ color: '#57CC86' }}>*</span>
             </label>
             <input value={brand.category}
               onChange={(e) => setBrand({ ...brand, category: e.target.value })}
@@ -782,7 +885,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
           </div>
           <div className="full-width" style={{ gridColumn: '1 / -1' }}>
             <label style={{ fontSize: '11.5px', fontWeight: 600, color: '#6B7280', display: 'block', marginBottom: '4px' }}>
-              Slogan / 品牌口号<span style={{ color: '#E11D48' }}>*</span>
+              Slogan / 品牌口号<span style={{ color: '#57CC86' }}>*</span>
             </label>
             <input value={brand.slogan}
               onChange={(e) => setBrand({ ...brand, slogan: e.target.value })}
@@ -801,7 +904,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                   padding: '6px 14px', borderRadius: '20px', fontSize: '12.5px',
                   border: '1px solid', cursor: 'pointer', transition: 'all 0.2s',
                   ...(brand.businessType === t
-                    ? { borderColor: '#E11D48', background: '#FFF1F2', color: '#E11D48', fontWeight: 600 }
+                    ? { borderColor: '#57CC86', background: '#E6F7EF', color: '#57CC86', fontWeight: 600 }
                     : { borderColor: '#E5E7EB', background: '#fff', color: '#6B7280' }),
                 }}>
                 {t}
@@ -820,7 +923,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                   padding: '6px 14px', borderRadius: '20px', fontSize: '12.5px',
                   border: '1px solid', cursor: 'pointer', transition: 'all 0.2s',
                   ...(brand.priceRange === p
-                    ? { borderColor: '#E11D48', background: '#FFF1F2', color: '#E11D48', fontWeight: 600 }
+                    ? { borderColor: '#57CC86', background: '#E6F7EF', color: '#57CC86', fontWeight: 600 }
                     : { borderColor: '#E5E7EB', background: '#fff', color: '#6B7280' }),
                 }}>
                 {p}
@@ -883,7 +986,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                   style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
                 <button onClick={() => { setLogoData(null); try { localStorage.removeItem(LOGO_DATA_KEY) } catch {} }}
                   style={{ position: 'absolute', top: '-6px', right: '-6px', width: '18px', height: '18px',
-                    borderRadius: '50%', background: '#FEE2E2', border: 'none', color: '#DC2626',
+                    borderRadius: '50%', background: '#D1FAE5', border: 'none', color: '#059669',
                     fontSize: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
                   }}>×</button>
               </div>
@@ -929,7 +1032,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                 padding: '10px 14px', borderRadius: '10px', fontSize: '13px', textAlign: 'left',
                 border: '1px solid', cursor: 'pointer', transition: 'all 0.2s',
                 ...(brand.stylePreference === s.key
-                  ? { borderColor: '#E11D48', background: '#FFF1F2', color: '#BE123C' }
+                  ? { borderColor: '#57CC86', background: '#E6F7EF', color: '#047857' }
                   : { borderColor: '#E5E7EB', background: '#fff', color: '#374151' }),
               }}>
               <span style={{ fontWeight: 600 }}>{s.label}</span>
@@ -982,7 +1085,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                   padding: '8px 18px', borderRadius: '22px', fontSize: '13px',
                   border: '1px solid', cursor: 'pointer', transition: 'all 0.2s',
                   ...(designPurposes.includes(p)
-                    ? { borderColor: '#E11D48', background: '#E11D48', color: '#fff', fontWeight: 600 }
+                    ? { borderColor: '#57CC86', background: '#57CC86', color: '#fff', fontWeight: 600 }
                     : { borderColor: '#E5E7EB', background: '#fff', color: '#4B5563' }),
                 }}>
                 {designPurposes.includes(p) && <Check size={14} style={{ marginRight: 4, verticalAlign: '-2px' }} />}
@@ -1063,14 +1166,14 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                         {/* 平台名称 + 选中计数 */}
                         <span style={{
                           fontSize: '14px', fontWeight: 600,
-                          color: isAllSelected ? '#E11D48' : '#374151',
+                          color: isAllSelected ? '#57CC86' : '#374151',
                         }}>
                           {plat.label}
                         </span>
                         {platSelectedCount > 0 && (
                           <span style={{
-                            fontSize: '11px', color: '#E11D48',
-                            background: '#FFF1F2', padding: '1px 8px', borderRadius: '8px',
+                            fontSize: '11px', color: '#57CC86',
+                            background: '#E6F7EF', padding: '1px 8px', borderRadius: '8px',
                             fontWeight: 500,
                           }}>
                             ✓ {platSelectedCount}/{plat.positions.length}
@@ -1082,16 +1185,16 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                         onClick={(e) => { e.stopPropagation(); selectAllPositions(plat.key) }}
                         style={{
                           fontSize: '12px', padding: '4px 12px', borderRadius: '14px',
-                          border: isAllSelected ? '1px solid #E11D48' : '1px solid #D1D5DB',
-                          background: isAllSelected ? '#E11D48' : '#fff',
+                          border: isAllSelected ? '1px solid #57CC86' : '1px solid #D1D5DB',
+                          background: isAllSelected ? '#57CC86' : '#fff',
                           color: isAllSelected ? '#fff' : '#6B7280',
                           cursor: 'pointer', fontWeight: 500,
                           transition: 'all 0.2s',
                         }}
                         onMouseEnter={(e) => {
                           if (!isAllSelected) {
-                            e.currentTarget.style.borderColor = '#E11D48'
-                            e.currentTarget.style.color = '#E11D48'
+                            e.currentTarget.style.borderColor = '#57CC86'
+                            e.currentTarget.style.color = '#57CC86'
                           }
                         }}
                         onMouseLeave={(e) => {
@@ -1117,7 +1220,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                               display: 'flex', alignItems: 'flex-start', gap: '10px',
                               padding: '8px 10px', borderRadius: '8px',
                               cursor: 'pointer',
-                              background: isSelected ? '#FFF1F2' : 'transparent',
+                              background: isSelected ? '#E6F7EF' : 'transparent',
                               transition: 'background 0.15s',
                               marginBottom: '2px',
                             }}
@@ -1136,7 +1239,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                                 style={{
                                   marginTop: '2px',
                                   width: '16px', height: '16px',
-                                  accentColor: '#E11D48',
+                                  accentColor: '#57CC86',
                                   cursor: 'pointer',
                                   flexShrink: 0,
                                 }}
@@ -1149,13 +1252,13 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                                 }}>
                                   <span style={{
                                     fontSize: '13px', fontWeight: 500,
-                                    color: isSelected ? '#E11D48' : '#374151',
+                                    color: isSelected ? '#57CC86' : '#374151',
                                   }}>
                                     {pos.label}
                                   </span>
                                   <span style={{
-                                    fontSize: '11px', color: '#E11D48',
-                                    background: '#FEF2F2', padding: '0 6px',
+                                    fontSize: '11px', color: '#57CC86',
+                                    background: '#ECFDF5', padding: '0 6px',
                                     borderRadius: '4px', whiteSpace: 'nowrap',
                                   }}>
                                     {pos.size} px
@@ -1178,7 +1281,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                               </div>
                               {/* 选中标记 */}
                               {isSelected && (
-                                <Check size={16} style={{ color: '#E11D48', flexShrink: 0, marginTop: '2px' }} />
+                                <Check size={16} style={{ color: '#57CC86', flexShrink: 0, marginTop: '2px' }} />
                               )}
                             </label>
                           )
@@ -1228,8 +1331,78 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
         📷 上传原始菜品图
       </h2>
       <p style={{ fontSize: '13px', color: '#9CA3AF', margin: '0 0 24px' }}>
-        上传一张菜品实拍图，系统将自动进行AI智能优化
+        上传菜品实拍图（支持多张），系统将自动进行AI智能优化
       </p>
+
+      {/* 多图套餐选择弹窗 */}
+      {showComboChoice && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center',
+          justifyContent: 'center', zIndex: 9999,
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: '16px', padding: '32px',
+            maxWidth: '420px', width: '90%', boxShadow: '0 20px 60px rgba(0,0,0,0.15)',
+          }}>
+            <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#111827', margin: '0 0 8px' }}>
+              已上传 {originalImages.length} 张图片
+            </h3>
+            <p style={{ fontSize: '13px', color: '#6B7280', margin: '0 0 20px' }}>
+              这些菜品图片是什么关系？
+            </p>
+            {/* 缩略图预览 */}
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
+              {originalImages.slice(0, 6).map((img, i) => (
+                <div key={i} style={{ width: '52px', height: '52px', borderRadius: '8px',
+                  overflow: 'hidden', border: '1px solid #E5E7EB' }}>
+                  <img src={img.b64} alt={img.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                </div>
+              ))}
+              {originalImages.length > 6 && (
+                <div style={{ width: '52px', height: '52px', borderRadius: '8px',
+                  background: '#F3F4F6', display: 'flex', alignItems: 'center',
+                  justifyContent: 'center', fontSize: '12px', color: '#6B7280' }}>
+                  +{originalImages.length - 6}
+                </div>
+              )}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+              <button onClick={() => { setComboMode('combo'); setShowComboChoice(false) }}
+                style={{ padding: '14px 20px', borderRadius: '12px', border: '2px solid #57CC86',
+                  background: '#E6F7EF', color: '#047857', fontSize: '14px', fontWeight: 600,
+                  cursor: 'pointer', textAlign: 'left' }}>
+                🍱 组成一个套餐 — 先合成套餐图再修图
+              </button>
+              <button onClick={() => { setComboMode('individual'); setShowComboChoice(false) }}
+                style={{ padding: '14px 20px', borderRadius: '12px', border: '1px solid #E5E7EB',
+                  background: '#fff', color: '#374151', fontSize: '14px', fontWeight: 600,
+                  cursor: 'pointer', textAlign: 'left' }}>
+                🍽️ 各自独立设计 — 逐张修图和生成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 多图缩略图导航（独立模式下） */}
+      {originalImages.length > 1 && comboMode === 'individual' && (
+        <div style={{ marginBottom: '16px' }}>
+          <p style={{ fontSize: '12px', color: '#6B7280', margin: '0 0 8px' }}>
+            当前处理第 {currentImageIndex + 1}/{originalImages.length} 张
+          </p>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {originalImages.map((img, i) => (
+              <div key={i} onClick={() => { setCurrentImageIndex(i); setOriginalImage(img.b64); setEnhancedImage(null) }}
+                style={{ width: '48px', height: '48px', borderRadius: '8px', overflow: 'hidden',
+                  border: i === currentImageIndex ? '2px solid #57CC86' : '1px solid #E5E7EB',
+                  cursor: 'pointer', opacity: i === currentImageIndex ? 1 : 0.6 }}>
+                <img src={img.b64} alt={img.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 上传区 */}
       {!originalImage ? (
@@ -1239,16 +1412,16 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
             textAlign: 'center', cursor: 'pointer', background: '#FAFAFA',
             transition: 'border-color 0.2s',
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.borderColor = '#E11D48')}
+          onMouseEnter={(e) => (e.currentTarget.style.borderColor = '#57CC86')}
           onMouseLeave={(e) => (e.currentTarget.style.borderColor = '#D1D5DB')}>
           <Upload size={40} style={{ color: '#9CA3AF', margin: '0 auto 12px' }} />
           <p style={{ fontSize: '15px', fontWeight: 600, color: '#374151', margin: '0 0 6px' }}>
             点击上传菜品实拍图
           </p>
           <p style={{ fontSize: '12.5px', color: '#9CA3AF', margin: 0 }}>
-            支持 JPG/PNG/WebP，建议尺寸 ≥ 512×512
+            支持 JPG/PNG/WebP，建议尺寸 ≥ 512×512（可多选）
           </p>
-          <input ref={fileInputRef} type="file" accept="image/*"
+          <input ref={fileInputRef} type="file" accept="image/*" multiple
             onChange={handleFileUpload} style={{ display: 'none' }} />
         </div>
       ) : (
@@ -1287,7 +1460,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
               /* ✅ 成功状态 */
               <>
                 <div style={{
-                  borderRadius: '12px', overflow: 'hidden', border: '2px solid #E11D48',
+                  borderRadius: '12px', overflow: 'hidden', border: '2px solid #57CC86',
                   position: 'relative', paddingBottom: '100%',
                 }}>
                   <img src={`data:image/png;base64,${enhancedImage}`} alt="修图结果"
@@ -1296,8 +1469,8 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                 <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
                   <button onClick={handleEnhance} disabled={isEnhancing}
                     style={{
-                      padding: '8px 16px', borderRadius: '8px', border: '1px solid #E11D48',
-                      background: isEnhancing ? '#FEE2E2' : '#E11D48', color: '#fff',
+                      padding: '8px 16px', borderRadius: '8px', border: '1px solid #57CC86',
+                      background: isEnhancing ? '#D1FAE5' : '#57CC86', color: '#fff',
                       fontSize: '12.5px', cursor: isEnhancing ? 'wait' : 'pointer', fontWeight: 600,
                       display: 'flex', alignItems: 'center', gap: '6px',
                     }}>
@@ -1309,16 +1482,16 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
             ) : enhanceError && !isEnhancing ? (
               /* ❌ 错误状态 */
               <div style={{
-                borderRadius: '12px', border: '1.5px solid #FCA5A5', background: '#FEF2F2',
+                borderRadius: '12px', border: '1.5px solid #6EE7B7', background: '#ECFDF5',
                 padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center',
               }}>
-                <p style={{ fontSize: '13px', color: '#DC2626', margin: 0, textAlign: 'center', fontWeight: 500 }}>
+                <p style={{ fontSize: '13px', color: '#059669', margin: 0, textAlign: 'center', fontWeight: 500 }}>
                   ⚠️ {enhanceError}
                 </p>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button onClick={() => { setEnhanceError(null); handleEnhance(); }}
                     style={{ padding: '8px 18px', borderRadius: '8px', border: 'none',
-                      background: '#E11D48', color: '#fff', fontSize: '13px', cursor: 'pointer', fontWeight: 600 }}>
+                      background: '#57CC86', color: '#fff', fontSize: '13px', cursor: 'pointer', fontWeight: 600 }}>
                     🔄 重试
                   </button>
                   <button onClick={handleSkipStep}
@@ -1331,12 +1504,12 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
             ) : isEnhancing ? (
               /* 🔄 进行中状态 */
               <div style={{
-                borderRadius: '12px', border: '2px dashed #E11D48',
+                borderRadius: '12px', border: '2px dashed #57CC86',
                 display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                minHeight: '200px', background: '#FEF2F2', gap: '12px',
+                minHeight: '200px', background: '#ECFDF5', gap: '12px',
               }}>
-                <Wand2 size={32} style={{ color: '#E11D48', animation: 'spin 1s linear infinite' }} />
-                <p style={{ fontSize: '14px', color: '#DC2626', margin: 0, fontWeight: 600 }}>
+                <Wand2 size={32} style={{ color: '#57CC86', animation: 'spin 1s linear infinite' }} />
+                <p style={{ fontSize: '14px', color: '#059669', margin: 0, fontWeight: 600 }}>
                   AI修图中... ({enhanceElapsed}s / 120s超时)
                 </p>
                 <p style={{ fontSize: '11px', color: '#9CA3AF', margin: 0 }}>
@@ -1345,7 +1518,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                 <button onClick={handleCancelEnhance}
                   style={{
                     padding: '6px 20px', borderRadius: '8px',
-                    border: '1px solid #FCA5A5', background: '#fff', color: '#DC2626',
+                    border: '1px solid #6EE7B7', background: '#fff', color: '#059669',
                     fontSize: '12px', cursor: 'pointer', fontWeight: 500,
                   }}>
                   ✕ 停止等待
@@ -1367,12 +1540,12 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
               }}>
                 {/* ⚠️ 修图红线警告 */}
                 <div style={{
-                  padding: '8px 14px', background: '#FEF2F2', borderRadius: '8px',
+                  padding: '8px 14px', background: '#ECFDF5', borderRadius: '8px',
                   border: '1px solid #FECACA', width: '100%', maxWidth: '420px',
                 }}>
-                  <p style={{ fontSize: '11.5px', color: '#DC2626', margin: 0, lineHeight: 1.6, fontWeight: 600 }}>
+                  <p style={{ fontSize: '11.5px', color: '#059669', margin: 0, lineHeight: 1.6, fontWeight: 600 }}>
                     ⚠️ <b>修图红线：</b>AI修图必须在原图基础上优化（亮度/对比度/去噪/色彩增强），<br/>
-                    <span style={{ color: '#E11D48' }}>严禁生成与原图内容不同的图片！</span><br/>
+                    <span style={{ color: '#57CC86' }}>严禁生成与原图内容不同的图片！</span><br/>
                     （如原图是炒青菜，修图后绝不能变成回锅肉）
                   </p>
                 </div>
@@ -1384,7 +1557,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                 <button onClick={handleEnhance}
                   style={{
                     padding: '10px 24px', borderRadius: '10px', border: 'none',
-                    background: '#E11D48', color: '#fff',
+                    background: '#57CC86', color: '#fff',
                     fontSize: '14px', cursor: 'pointer', fontWeight: 600,
                     display: 'flex', alignItems: 'center', gap: '8px',
                   }}>
@@ -1421,7 +1594,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
       <div style={{ background: '#FAFAFA', borderRadius: '12px', padding: '24px', border: '1px solid #F3F4F6' }}>
         <div style={{ marginBottom: '18px' }}>
           <label style={{ fontSize: '12.5px', fontWeight: 600, color: '#374151', display: 'block', marginBottom: '6px' }}>
-            菜品名称 <span style={{ color: '#E11D48' }}>*</span>
+            菜品名称 <span style={{ color: '#57CC86' }}>*</span>
           </label>
           <input value={dishInfo.name}
             onChange={(e) => setDishInfo({ ...dishInfo, name: e.target.value })}
@@ -1462,13 +1635,83 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
           </p>
         </div>
       </div>
+
+      {/* 改动4 + 改动6：输出选项 */}
+      <div style={{
+        marginTop: '20px', background: '#F0FDF4', borderRadius: '12px',
+        padding: '18px 22px', border: '1px solid #A7F3D0',
+      }}>
+        <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#047857', margin: '0 0 12px' }}>
+          🎯 输出选项（影响生成数量）
+        </h3>
+
+        <label style={{
+          display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer',
+          padding: '10px 12px', borderRadius: '8px',
+          background: generateBothVariants ? '#D1FAE5' : '#FFF',
+          border: `1px solid ${generateBothVariants ? '#34D399' : '#E5E7EB'}`,
+          marginBottom: '10px',
+        }}>
+          <input type="checkbox" checked={generateBothVariants}
+            onChange={(e) => setGenerateBothVariants(e.target.checked)}
+            style={{ marginTop: '2px', accentColor: '#57CC86' }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: '#111827' }}>
+              同时输出 2 个风格变体（简约 + 活力）
+            </div>
+            <div style={{ fontSize: '11.5px', color: '#6B7280', marginTop: '3px' }}>
+              简约：留白克制，突出主体 / 活力：撞色冲击，烟火气浓 — 每位置 ×2
+            </div>
+          </div>
+        </label>
+
+        <label style={{
+          display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer',
+          padding: '10px 12px', borderRadius: '8px',
+          background: generateNoText ? '#D1FAE5' : '#FFF',
+          border: `1px solid ${generateNoText ? '#34D399' : '#E5E7EB'}`,
+        }}>
+          <input type="checkbox" checked={generateNoText}
+            onChange={(e) => setGenerateNoText(e.target.checked)}
+            style={{ marginTop: '2px', accentColor: '#57CC86' }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: '#111827' }}>
+              额外输出"不带文字"纯图版
+            </div>
+            <div style={{ fontSize: '11.5px', color: '#6B7280', marginTop: '3px' }}>
+              方便后期自由排版/二次设计 — 每位置再 ×2
+            </div>
+          </div>
+        </label>
+
+        <div style={{
+          marginTop: '12px', padding: '10px 12px', background: '#FFF',
+          borderRadius: '8px', border: '1px dashed #34D399',
+          fontSize: '12px', color: '#047857',
+        }}>
+          📊 本次预计生成：<b style={{ fontSize: '14px' }}>
+            {selectedPositions.size * (generateBothVariants ? 2 : 1) * (generateNoText ? 2 : 1)}
+          </b> 张
+          （{selectedPositions.size} 位置 × {generateBothVariants ? 2 : 1} 风格 × {generateNoText ? 2 : 1} 文字版本）
+          <span style={{ marginLeft: '10px', color: '#9CA3AF' }}>
+            今日剩余额度：{Math.max(0, DAILY_LIMIT - getDailyCount())}/{DAILY_LIMIT}
+          </span>
+        </div>
+      </div>
     </div>
   )
 
   // ════════════════════════════════════════
   // STEP 5: 批量生成
   // ════════════════════════════════════════
-  const renderStep5 = () => (
+  const renderStep5 = () => {
+    // 实际任务总数 = 位置 × 风格变体 × 文字版本
+    const variantCount = generateBothVariants ? 2 : 1;
+    const textVersionCount = generateNoText ? 2 : 1;
+    const totalTasks = selectedPositions.size * variantCount * textVersionCount;
+    const platformCount = [...selectedPositions].reduce((acc, k) => { const pk = k.split(':')[0]; return acc.add(pk); }, new Set<string>()).size;
+
+    return (
     <div style={{ padding: '28px 36px' }}>
       <h2 style={{ fontSize: '18px', fontWeight: 700, color: '#111827', margin: '0 0 4px' }}>
         🪄 一键批量生成
@@ -1479,30 +1722,46 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
 
       {/* 汇总信息卡片 */}
       <div style={{
-        background: 'linear-gradient(135deg, #FFF1F2 0%, #FFF 100%)',
+        background: 'linear-gradient(135deg, #E6F7EF 0%, #FFF 100%)',
         borderRadius: '12px', padding: '18px 22px', marginBottom: '24px',
-        border: '1px solid #FECDD3',
+        border: '1px solid #A7F3D0',
       }}>
-        <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#BE123C', margin: '0 0 12px' }}>生成任务汇总</h3>
+        <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#047857', margin: '0 0 12px' }}>生成任务汇总</h3>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', fontSize: '12.5px', color: '#374151' }}>
           <div>🏷️ 品牌：<b>{brand.brandName || '-'}</b></div>
           <div>🍽️ 菜品：<b>{dishInfo.name || '-'}</b></div>
           <div>🎨 风格：<b>{STYLE_PRESETS.find(s => s.key === brand.stylePreference)?.label.split(' ')[1] || '-'}</b></div>
-          <div>📱 生成数量：<b>{selectedPositions.size} 张</b>（{[...selectedPositions].reduce((acc, k) => { const pk = k.split(':')[0]; return acc.add(pk) }, new Set<string>()).size} 个平台）</div>
+          <div>📱 生成数量：<b>{totalTasks} 张</b>（{platformCount} 个平台 · {selectedPositions.size} 位置 × {variantCount} 风格 × {textVersionCount} 文字版）</div>
+        </div>
+        <div style={{
+          marginTop: '10px', padding: '8px 12px', background: '#FFF',
+          borderRadius: '6px', border: '1px dashed #34D399',
+          fontSize: '11.5px', color: '#047857',
+        }}>
+          ⚡ 今日剩余额度：<b>{Math.max(0, DAILY_LIMIT - getDailyCount())}/{DAILY_LIMIT}</b>
+          {totalTasks > Math.max(0, DAILY_LIMIT - getDailyCount()) && (
+            <span style={{ marginLeft: '10px', color: '#DC2626', fontWeight: 600 }}>
+              ⚠️ 超出今日额度，请减少位置或关闭风格变体/文字版选项
+            </span>
+          )}
         </div>
       </div>
 
       {/* 生成按钮 */}
       {!isGenerating && generatedImages.length === 0 && (
         <button onClick={handleBatchGenerate}
+          disabled={totalTasks === 0 || totalTasks > Math.max(0, DAILY_LIMIT - getDailyCount())}
           style={{
             width: '100%', padding: '18px', borderRadius: '14px', border: 'none',
-            background: 'linear-gradient(135deg, #E11D48 0%, #BE123C 100%)',
-            color: '#fff', fontSize: '16px', fontWeight: 700, cursor: 'pointer',
+            background: (totalTasks === 0 || totalTasks > Math.max(0, DAILY_LIMIT - getDailyCount()))
+              ? '#D1D5DB'
+              : 'linear-gradient(135deg, #57CC86 0%, #047857 100%)',
+            color: '#fff', fontSize: '16px', fontWeight: 700,
+            cursor: (totalTasks === 0 || totalTasks > Math.max(0, DAILY_LIMIT - getDailyCount())) ? 'not-allowed' : 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
-            boxShadow: '0 4px 16px rgba(225,29,72,0.3)',
+            boxShadow: '0 4px 16px rgba(87,204,134,0.3)',
           }}>
-          <Wand2 size={22} /> 开始批量生成（{selectedPositions.size} 张）
+          <Wand2 size={22} /> 开始批量生成（{totalTasks} 张）
         </button>
       )}
 
@@ -1512,7 +1771,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
           padding: '24px', textAlign: 'center', background: '#FAFAFA',
           borderRadius: '12px', border: '1px solid #F3F4F6',
         }}>
-          <RefreshCw size={36} style={{ color: '#E11D48', animation: 'spin 1.5s linear infinite', margin: '0 auto 12px' }} />
+          <RefreshCw size={36} style={{ color: '#57CC86', animation: 'spin 1.5s linear infinite', margin: '0 auto 12px' }} />
           <p style={{ fontSize: '15px', fontWeight: 600, color: '#374151', margin: '0 0 6px' }}>
             正在生成中...
           </p>
@@ -1525,7 +1784,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
           }}>
             <div style={{
               width: `${(generatedImages.filter(i => i.status === 'done').length / Math.max(generatedImages.length, 1)) * 100}%`,
-              height: '100%', background: 'linear-gradient(90deg, #E11D48, #F472B6)',
+              height: '100%', background: 'linear-gradient(90deg, #57CC86, #F472B6)',
               borderRadius: '3px', transition: 'width 0.3s',
             }} />
           </div>
@@ -1553,14 +1812,15 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
 
       {/* 错误重试入口 */}
       {generatedImages.some(i => i.status === 'error') && !isGenerating && (
-        <div style={{ marginTop: '16px', padding: '12px 16px', background: '#FEF2F2', borderRadius: '10px' }}>
-          <p style={{ fontSize: '12.5px', color: '#DC2626', margin: '0 0 8px' }}>
+        <div style={{ marginTop: '16px', padding: '12px 16px', background: '#ECFDF5', borderRadius: '10px' }}>
+          <p style={{ fontSize: '12.5px', color: '#059669', margin: '0 0 8px' }}>
             ⚠️ 部分图片生成失败，可进入下一步单独重绘
           </p>
         </div>
       )}
     </div>
-  )
+  );
+  };
 
   // ════════════════════════════════════════
   // STEP 6: 展示 & 调整
@@ -1589,18 +1849,18 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
           {generatedImages.map(img => (
             <div key={img.id} style={{
               borderRadius: '14px', border: `2px solid ${
-                img.status === 'done' ? '#D1FAE5' : img.status === 'error' ? '#FEE2E2' : '#F3F4F6'
+                img.status === 'done' ? '#D1FAE5' : img.status === 'error' ? '#D1FAE5' : '#F3F4F6'
               }`,
               background: '#fff', overflow: 'hidden',
             }}>
               {/* 平台标签 */}
               <div style={{
                 padding: '8px 14px', fontSize: '12px', fontWeight: 600,
-                background: img.status === 'done' ? '#ECFDF5' : img.status === 'error' ? '#FEF2F2' : '#F9FAFB',
+                background: img.status === 'done' ? '#ECFDF5' : img.status === 'error' ? '#ECFDF5' : '#F9FAFB',
                 borderBottom: `1px solid ${img.status === 'done' ? '#A7F3D0' : img.status === 'error' ? '#FECACA' : '#F3F4F6'}`,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
               }}>
-                <span style={{ color: img.status === 'done' ? '#059669' : img.status === 'error' ? '#DC2626' : '#6B7280' }}>
+                <span style={{ color: img.status === 'done' ? '#059669' : img.status === 'error' ? '#059669' : '#6B7280' }}>
                   {img.platformLabel}
                 </span>
                 <span style={{ fontSize: '10.5px', color: '#9CA3AF' }}>{img.size}</span>
@@ -1613,7 +1873,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                     position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
                     alignItems: 'center', justifyContent: 'center', gap: '8px',
                   }}>
-                    <RefreshCw size={24} style={{ color: '#E11D48', animation: 'spin 1s linear infinite' }} />
+                    <RefreshCw size={24} style={{ color: '#57CC86', animation: 'spin 1s linear infinite' }} />
                     <span style={{ fontSize: '12px', color: '#9CA3AF' }}>生成中...</span>
                   </div>
                 )}
@@ -1625,7 +1885,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                 {img.status === 'error' && (
                   <div style={{
                     position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
-                    alignItems: 'center', justifyContent: 'center', gap: '8px', color: '#DC2626',
+                    alignItems: 'center', justifyContent: 'center', gap: '8px', color: '#059669',
                   }}>
                     <AlertCircle size={24} />
                     <span style={{ fontSize: '12px', textAlign: 'center', padding: '0 12px' }}>
@@ -1661,7 +1921,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
                 {img.status === 'error' && (
                   <button onClick={() => handleRegenerate(img.id)} style={{
                     width: '100%', padding: '6px 0', borderRadius: '6px', border: 'none',
-                    background: '#FEF2F2', color: '#DC2626', fontSize: '12px',
+                    background: '#ECFDF5', color: '#059669', fontSize: '12px',
                     cursor: 'pointer', fontWeight: 600,
                   }}>
                     <RefreshCw size={13} style={{ marginRight: 4, verticalAlign: '-2px' }} /> 重新生成
@@ -1813,7 +2073,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <div style={{
             width: '36px', height: '36px', borderRadius: '10px',
-            background: 'linear-gradient(135deg, #E11D48 0%, #F472B6 100%)',
+            background: 'linear-gradient(135deg, #57CC86 0%, #F472B6 100%)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: '18px', color: '#fff',
           }}>🎨</div>
@@ -1828,7 +2088,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
         </div>
         <span style={{
           padding: '4px 12px', borderRadius: '20px', fontSize: '11px', fontWeight: 600,
-          background: '#FFF1F2', color: '#E11D48', border: '1px solid #FECDD3',
+          background: '#E6F7EF', color: '#57CC86', border: '1px solid #A7F3D0',
         }}>
           gpt-image-2
         </span>
@@ -1866,7 +2126,7 @@ ${brand.slogan ? `Slogan：${brand.slogan}` : ''}
             <button onClick={goNext} disabled={!canGoNext()}
               style={{
                 padding: '10px 28px', borderRadius: '10px', border: 'none',
-                background: canGoNext() ? 'linear-gradient(135deg,#E11D48,#BE123C)' : '#E5E7EB',
+                background: canGoNext() ? 'linear-gradient(135deg,#57CC86,#047857)' : '#E5E7EB',
                 color: canGoNext() ? '#fff' : '#9CA3AF',
                 fontSize: '13.5px', fontWeight: 700, cursor: canGoNext() ? 'pointer' : 'not-allowed',
                 display: 'flex', alignItems: 'center', gap: '6px',
