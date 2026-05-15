@@ -712,12 +712,38 @@ async fn image_generate_inner(prompt: String, image_url: Option<String>) -> Resu
     let is_img2img = image_url.is_some();
     log::info!("[IMAGE_GEN] 生图请求: prompt长度={}, 图生图={}", prompt.len(), is_img2img);
     let start = std::time::Instant::now();
-    let url_ref = image_url.as_deref();
 
-    // 🔧 B095修复: 图生图场景只用Banana2(支持base64),跳过Seedream(仅支持URL)
-    // 🔧 B097修复: 文生图场景改为串行策略 - Bana2 60秒超时→降级Seedream
+    // 🔧 B098修复(v5.5.24): 墨行 /media/generations 的 image / reference_images 字段
+    // 严格要求公网 https URL,不支持 base64 data URL。
+    // 如果前端传来 base64,先上传到阿里云 OSS 拿公网 URL,再传给墨行。
+    let processed_url: Option<String> = if let Some(ref u) = image_url {
+        if u.starts_with("data:") {
+            log::info!("[IMAGE_GEN] 检测到 base64 参考图(len={}),先上传 OSS...", u.len());
+            // 剥离 "data:image/xxx;base64," 前缀,拿到纯 base64
+            let b64_pure = u.split(',').nth(1).unwrap_or(u);
+            match oss_uploader::upload_image_to_oss(b64_pure).await {
+                Ok(oss_url) => {
+                    log::info!("[IMAGE_GEN] ✅ 参考图已上传OSS: {}", oss_url);
+                    Some(oss_url)
+                }
+                Err(e) => {
+                    log::error!("[IMAGE_GEN] 参考图上传OSS失败: {}", e);
+                    return Err(format!("参考图上传OSS失败: {}", e));
+                }
+            }
+        } else {
+            // 已经是 https URL,直接透传
+            log::info!("[IMAGE_GEN] 参考图已是公网URL,直接透传");
+            Some(u.clone())
+        }
+    } else {
+        None
+    };
+    let url_ref = processed_url.as_deref();
+
+    // 🔧 B098修复: 参考图统一转为 OSS URL 后,Seedream 也能用图生图,改回双通道
     if is_img2img {
-        log::info!("[IMAGE_GEN] 图生图模式: 仅使用Banana2(Seedream不支持base64)");
+        log::info!("[IMAGE_GEN] 图生图模式(参考图已转公网URL): Banana2优先");
         let result = try_moxing_banana2(&prompt, url_ref).await?;
         // ☁️ B095 v5.5.24: 成功后异步上传到OSS(不阻塞前端)
         if result.success {
