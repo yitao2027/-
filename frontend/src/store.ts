@@ -607,8 +607,9 @@ export const useStore = create<UserState>((set, get) => ({
   userProfile: loadUserProfile(),
   uploadedFiles: [],
   expertSessions: loadExpertSessions(),
-  activeExpertSessionId: null,
-  activeExpertType: 'general',
+  // 🔧 v5.5.28 B101 修复：从localStorage恢复活跃专家会话ID + 类型，否则重启后聊天记录"看不见"
+  activeExpertSessionId: localStorage.getItem('shaoziclaw_active_expert_session_id') || null,
+  activeExpertType: (localStorage.getItem('shaoziclaw_active_expert_type') as ExpertType) || 'general',
 
   // ⏰ 定时任务（v4.7.0 新增）
   scheduledTasks: [],
@@ -977,6 +978,9 @@ export const useStore = create<UserState>((set, get) => ({
           s.id === existing.id ? { ...s, skillName } : s
         );
         saveExpertSessions(sessions);
+        // 🔧 v5.5.28 B101 持久化活跃专家
+        localStorage.setItem('shaoziclaw_active_expert_session_id', existing.id);
+        localStorage.setItem('shaoziclaw_active_expert_type', expertType);
         set({
           expertSessions: sessions,
           activeExpertSessionId: existing.id,
@@ -984,6 +988,9 @@ export const useStore = create<UserState>((set, get) => ({
           activeTaskSessionId: null,
         });
       } else {
+        // 🔧 v5.5.28 B101 持久化活跃专家
+        localStorage.setItem('shaoziclaw_active_expert_session_id', existing.id);
+        localStorage.setItem('shaoziclaw_active_expert_type', expertType);
         set({
           activeExpertSessionId: existing.id,
           activeExpertType: expertType,
@@ -1017,6 +1024,9 @@ export const useStore = create<UserState>((set, get) => ({
     };
     const sessions = [newSession, ...get().expertSessions];
     saveExpertSessions(sessions);
+    // 🔧 v5.5.28 B101 持久化活跃专家
+    localStorage.setItem('shaoziclaw_active_expert_session_id', id);
+    localStorage.setItem('shaoziclaw_active_expert_type', expertType);
     set({ expertSessions: sessions, activeExpertSessionId: id, activeExpertType: expertType, activeTaskSessionId: null }); // 🔧 v5.3.10: 创建专家会话时清除任务会话
     console.log('[B008v2] store updated, activeExpertSessionId=', id, 'total sessions=', sessions.length);
     return id;
@@ -1025,6 +1035,9 @@ export const useStore = create<UserState>((set, get) => ({
   switchExpertSession: (sessionId) => {
     const session = get().expertSessions.find(s => s.id === sessionId);
     if (session) {
+      // 🔧 v5.5.28 B101 持久化活跃专家
+      localStorage.setItem('shaoziclaw_active_expert_session_id', sessionId);
+      localStorage.setItem('shaoziclaw_active_expert_type', session.expertType);
       set({ activeExpertSessionId: sessionId, activeExpertType: session.expertType, activeTaskSessionId: null }); // 🔧 v5.3.10: 切换专家会话时清除任务会话
     }
   },
@@ -1035,12 +1048,21 @@ export const useStore = create<UserState>((set, get) => ({
     const newActiveId = get().activeExpertSessionId === sessionId
       ? (remaining.length > 0 ? remaining[0].id : null)
       : get().activeExpertSessionId;
+    const newType: ExpertType = newActiveId
+      ? (remaining.find(s => s.id === newActiveId)?.expertType || 'general')
+      : 'general';
+    // 🔧 v5.5.28 B101 持久化活跃专家
+    if (newActiveId) {
+      localStorage.setItem('shaoziclaw_active_expert_session_id', newActiveId);
+      localStorage.setItem('shaoziclaw_active_expert_type', newType);
+    } else {
+      localStorage.removeItem('shaoziclaw_active_expert_session_id');
+      localStorage.removeItem('shaoziclaw_active_expert_type');
+    }
     set({
       expertSessions: remaining,
       activeExpertSessionId: newActiveId,
-      activeExpertType: newActiveId
-        ? (remaining.find(s => s.id === newActiveId)?.expertType || 'general')
-        : 'general',
+      activeExpertType: newType,
     });
   },
 

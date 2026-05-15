@@ -307,9 +307,13 @@ pub async fn call_ai(req: &ChatRequest, model: &str) -> Result<ChatResponse, Str
 /// 🧠 构建系统提示词（静态 + 动态红线）
 fn build_system_prompt_with_learning(_learning_state: Option<&()>, skill_name: Option<&str>) -> String {
     let mut prompt = SYSTEM_PROMPT.to_string();
-    // 如果有指定Skill，附加Skill标识
+    // 如果有指定Skill，附加Skill标识 + 加载真实 SKILL.md 内容
     if let Some(sk) = skill_name {
         prompt.push_str(&format!("\n\n当前正在使用专业Skill：[{}]", sk));
+        if let Some(skill_md) = load_skill_md(sk) {
+            prompt.push_str("\n\n");
+            prompt.push_str(&skill_md);
+        }
     }
     prompt
 }
@@ -319,6 +323,11 @@ fn build_system_prompt_with_redline(redline_addition: Option<&str>, skill_name: 
     let mut prompt = SYSTEM_PROMPT.to_string();
     if let Some(sk) = skill_name {
         prompt.push_str(&format!("\n\n当前正在使用专业Skill：[{}]", sk));
+        // 🔧 v5.5.28 B102 修复：真正加载 SKILL.md 注入 system prompt
+        if let Some(skill_md) = load_skill_md(sk) {
+            prompt.push_str("\n\n");
+            prompt.push_str(&skill_md);
+        }
     }
     // 🧠 v5.2: 注入长期记忆
     if let Some(mem) = memory_context {
@@ -329,6 +338,56 @@ fn build_system_prompt_with_redline(redline_addition: Option<&str>, skill_name: 
         prompt.push_str(addition);
     }
     prompt
+}
+
+/// 🔧 v5.5.28 B102: 从 ~/.workbuddy/skills/ 下加载 SKILL.md 内容
+/// 搜索路径优先级：
+/// 1. ~/.workbuddy/skills/shaozi-claw-v4/_coordinators/<skill_name>/SKILL.md (orchestrator类)
+/// 2. ~/.workbuddy/skills/shaozi-claw-v4/<category>/<skill_name>/SKILL.md
+/// 3. ~/.workbuddy/skills/<skill_name>/SKILL.md (顶层user-level)
+/// 找不到返回 None，避免阻塞主流程
+fn load_skill_md(skill_name: &str) -> Option<String> {
+    use std::path::PathBuf;
+    let home = dirs::home_dir()?;
+    let base: PathBuf = home.join(".workbuddy").join("skills");
+
+    // 候选路径列表
+    let candidates: Vec<PathBuf> = vec![
+        base.join("shaozi-claw-v4").join("_coordinators").join(skill_name).join("SKILL.md"),
+        base.join("shaozi-claw-v4").join("L0").join(skill_name).join("SKILL.md"),
+        base.join("shaozi-claw-v4").join("L1").join(skill_name).join("SKILL.md"),
+        base.join("shaozi-claw-v4").join("L2").join(skill_name).join("SKILL.md"),
+        base.join("shaozi-claw-v4").join("L3").join(skill_name).join("SKILL.md"),
+        base.join(skill_name).join("SKILL.md"),
+    ];
+
+    for path in &candidates {
+        if path.exists() {
+            match std::fs::read_to_string(path) {
+                Ok(content) => {
+                    crate::claw_log::log_info("AI_ENGINE", &format!("load_skill_md: hit {} ({} bytes)", path.display(), content.len()));
+                    // 截断防止 system prompt 过长（~8K 字符上限）
+                    let truncated = if content.chars().count() > 8000 {
+                        let mut s = String::new();
+                        for (i, c) in content.chars().enumerate() {
+                            if i >= 8000 { break; }
+                            s.push(c);
+                        }
+                        s.push_str("\n\n[...SKILL.md 内容过长已截断...]");
+                        s
+                    } else {
+                        content
+                    };
+                    return Some(truncated);
+                }
+                Err(e) => {
+                    crate::claw_log::log_info("AI_ENGINE", &format!("load_skill_md: read fail {} {}", path.display(), e));
+                }
+            }
+        }
+    }
+    crate::claw_log::log_info("AI_ENGINE", &format!("load_skill_md: not found for {}", skill_name));
+    None
 }
 
 // ============================================================
