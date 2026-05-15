@@ -6588,7 +6588,7 @@ dependencies = [
 
 [[package]]
 name = "shaoziclaw-app"
-version = "5.5.25"
+version = "5.5.27"
 dependencies = [
  "arrow-array",
  "arrow-schema",

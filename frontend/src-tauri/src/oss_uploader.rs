@@ -135,27 +135,34 @@ fn generate_signed_url(object_key: &str, expires_secs: i64) -> Result<String, St
     Ok(signed_url)
 }
 
-/// HEAD 验证：模拟第三方视角确认 URL 可访问
+/// GET 验证：模拟第三方视角确认 URL 可访问
 /// B099: 防止"静默吞 403"反模式——上传后立即验证，fail-fast
+/// v5.5.26 修复：OSS V1 预签名 URL 的 HTTP Method 参与签名，
+/// 必须用 GET 而非 HEAD（HEAD 与 GET 签名不互通，会返回 403 SignatureDoesNotMatch）
+/// 用 Range: bytes=0-0 只取 1 字节，期望 206 Partial Content
 async fn validate_url_accessible(url: &str) -> Result<(), String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| format!("HTTP客户端创建失败: {}", e))?;
 
-    let resp = client.head(url)
+    let resp = client.get(url)
+        .header("Range", "bytes=0-0")
         .send()
         .await
-        .map_err(|e| format!("[VALIDATE][RefImage] HEAD请求失败: {}", e))?;
+        .map_err(|e| format!("[VALIDATE][RefImage] GET请求失败: {}", e))?;
 
     let status = resp.status();
+    // 200 OK / 206 Partial Content 均视为成功
     if status.is_success() {
         log::info!("[VALIDATE][RefImage] ✅ 预签名URL可访问 (HTTP {})", status);
         Ok(())
     } else {
+        let body_preview = resp.text().await.unwrap_or_default();
         let msg = format!(
-            "[VALIDATE][RefImage] ❌ 预签名URL不可访问 HTTP {} — 墨行将无法拉到参考图",
-            status
+            "[VALIDATE][RefImage] ❌ 预签名URL不可访问 HTTP {} — 墨行将无法拉到参考图. body={}",
+            status,
+            &body_preview[..body_preview.len().min(200)]
         );
         log::error!("{}", msg);
         Err(msg)

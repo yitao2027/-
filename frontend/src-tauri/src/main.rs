@@ -741,23 +741,50 @@ async fn image_generate_inner(prompt: String, image_url: Option<String>) -> Resu
     };
     let url_ref = processed_url.as_deref();
 
-    // 🔧 B098修复: 参考图统一转为 OSS URL 后,Seedream 也能用图生图,改回双通道
+    // 🔧 B100修复(v5.5.27): 图生图必须走 /chat/completions 接口（真正的图片编辑模式）
+    // /media/generations 的 image 字段只是"风格参考"，不是"对原图做编辑"
+    // /chat/completions 用 messages 格式把图片作为用户输入 + prompt 作为操作指令，模型才能理解修图语义
     if is_img2img {
-        log::info!("[IMAGE_GEN] 图生图模式(参考图已转公网URL): Banana2优先");
-        let result = try_moxing_banana2(&prompt, url_ref).await?;
-        // ☁️ B095 v5.5.24: 成功后异步上传到OSS(不阻塞前端)
-        if result.success {
-            if let Some(b64) = &result.b64_data {
-                let b64_clone = b64.clone();
-                tokio::spawn(async move {
-                    match oss_uploader::upload_image_to_oss(&b64_clone).await {
-                        Ok(url) => log::info!("[IMAGE_GEN][OSS] 图生图结果已上传: {}", url),
-                        Err(e) => log::warn!("[IMAGE_GEN][OSS] 上传失败(不影响前端): {}", e),
+        let img_ref = url_ref.unwrap_or("");
+        log::info!("[IMAGE_GEN] 图生图模式(chat/completions): 参考图前60字符={}", 
+            &img_ref.chars().take(60).collect::<String>());
+        
+        // 优先: Banana2 chat/completions（真正的图片编辑）
+        match try_moxing_banana2_img2img(&prompt, img_ref).await {
+            Ok(result) => {
+                log::info!("[IMAGE_GEN] ✅ Banana2-img2img成功,耗时{:?}", start.elapsed());
+                // 成功后异步上传到OSS(不阻塞前端)
+                if result.success {
+                    if let Some(b64) = &result.b64_data {
+                        let b64_clone = b64.clone();
+                        tokio::spawn(async move {
+                            match oss_uploader::upload_image_to_oss(&b64_clone).await {
+                                Ok(url) => log::info!("[IMAGE_GEN][OSS] 图生图结果已上传: {}", url),
+                                Err(e) => log::warn!("[IMAGE_GEN][OSS] 上传失败(不影响前端): {}", e),
+                            }
+                        });
                     }
-                });
+                }
+                return Ok(result);
+            }
+            Err(e) => {
+                log::warn!("[IMAGE_GEN] Banana2-img2img失败({}), 降级到media/generations", e);
+                // 降级: 走 /media/generations（至少能出图，虽然不是严格修图）
+                let result = try_moxing_banana2(&prompt, url_ref).await?;
+                if result.success {
+                    if let Some(b64) = &result.b64_data {
+                        let b64_clone = b64.clone();
+                        tokio::spawn(async move {
+                            match oss_uploader::upload_image_to_oss(&b64_clone).await {
+                                Ok(url) => log::info!("[IMAGE_GEN][OSS] 图生图结果已上传: {}", url),
+                                Err(e) => log::warn!("[IMAGE_GEN][OSS] 上传失败(不影响前端): {}", e),
+                            }
+                        });
+                    }
+                }
+                return Ok(result);
             }
         }
-        return Ok(result);
     }
 
     // 文生图: 串行降级策略
