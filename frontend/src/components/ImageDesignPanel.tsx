@@ -9,7 +9,7 @@
  *   Step1 品牌档案 → Step2 目的+场景 → Step3 原图上传+AI修图
  *   → Step4 文案收集 → Step5 批量生成 → Step6 展示调整 → Step7 下载存档
  *
- * 默认模型：gpt-image-2（API: api.apiyi.com）
+ * 默认模型：AI图片生成（API: api.apiyi.com）
  * ═══════════════════════════════════════════════════════════════════════
  */
 
@@ -447,12 +447,24 @@ export default function ImageDesignPanel() {
   }
 
   // ─── 调用后端AI生图 ───
+  // 🔧 v5.5.22 hotfix: 增加 referenceImageB64 参数，支持图生图（AI修图传原图）
   const callGenerateAPI = async (
     prompt: string,
-    size: string = '1024x1024'
+    size: string = '1024x1024',
+    referenceImageB64?: string
   ): Promise<{ success: boolean; b64Data?: string; error?: string }> => {
     try {
-      const result = await invoke<any>('image_generate', { prompt, size: size || undefined })
+      let result: any
+      if (referenceImageB64) {
+        // 图生图模式：调用 image_generate_with_ref，传入原图
+        result = await invoke<any>('image_generate_with_ref', {
+          prompt,
+          referenceImageUrl: referenceImageB64
+        })
+      } else {
+        // 纯文生图模式
+        result = await invoke<any>('image_generate', { prompt, size: size || undefined })
+      }
       if (result.success && result.b64_data) {
         return { success: true, b64Data: result.b64_data }
       }
@@ -462,7 +474,7 @@ export default function ImageDesignPanel() {
     }
   }
 
-  // ─── Step3: AI智能修图（用gpt-image-2优化原图质量） ───
+  // ─── Step3: AI智能修图（优化原图画质） ───
   const handleEnhance = async () => {
     if (!originalImage) return
 
@@ -480,24 +492,34 @@ export default function ImageDesignPanel() {
     }, 1000)
 
     const enhancePrompt =
-`专业美食摄影精修：
-对以下菜品照片进行商业级后期处理——
-自动提亮调色至最佳曝光、去除杂乱背景替换为纯深色或渐变背景、强化菜品主体锐度和色彩饱和度、修复任何曝光不足区域、添加柔和的美食级灯光质感、画面整体提升食欲感和高级感。
-输出要求：高质量PNG，保留菜品所有细节和真实质感。
+`【任务类型】图像画质增强（image enhancement / restoration），不是图像生成（image generation），不是图像编辑（image editing）。
 
-【⚠️ 强制约束 — 修图红线】
-你只能对输入图片进行画质增强操作（调整亮度、对比度、饱和度、锐化、降噪），绝对不能改变图片中的主体内容、菜品、场景。
-如果输入的是炒青菜，输出必须还是炒青菜，只是更清晰好看。如果输入的是回锅肉，输出必须还是回锅肉。
-严禁生成与原图内容不同的图片！违反此约束属于严重错误。
+【唯一允许的操作】
+仅对输入图片做以下后期处理：
+1. 自动白平衡与曝光修正（提亮欠曝、压暗高光）
+2. 提升锐度与细节（菜品边缘、纹理）
+3. 适度提升色彩饱和度与对比度（更有食欲感）
+4. 降噪、去模糊
+5. 输出高质量 PNG
 
-${brand.brandName ? `品牌风格参考：${brand.brandName} - ${brand.stylePreference}` : ''}`
+【⛔ 绝对禁止 — 违反任意一条均为严重错误】
+1. 禁止改变画面中的任何主体、菜品、餐具、桌面、背景、构图、视角、光源方向。
+2. 禁止替换、移除、新增任何物体（包括但不限于背景、灯光、餐具、装饰、文字）。
+3. 禁止在图片上添加任何文字、logo、水印、标签、品牌名、菜名、价格、签名、印章。
+4. 禁止改变图片的纵横比、裁切方式。
+5. 禁止把照片改成插画、油画、3D 渲染或任何其他风格——必须保持原始摄影风格。
+6. 输入是什么菜，输出必须还是同一道菜的同一张照片，只是画质更好。例：输入炒青菜→输出炒青菜；输入回锅肉→输出回锅肉。
+
+【自检】
+输出前请确认：(a) 主体内容与输入完全一致；(b) 画面上没有任何文字；(c) 仅做了画质优化。任一不满足则放弃生成。`
 
     try {
       console.log('[ImageDesign] 开始AI修图，prompt长度:', enhancePrompt.length)
 
       // 🔧 用Promise.race实现超时控制（最多等180秒，与后端HTTP超时一致）
+      // 🔧 v5.5.22 hotfix: 必须传 originalImage 走图生图模式，避免墨行退化为纯文生图
       const TIMEOUT_MS = 180_000
-      const invokePromise = callGenerateAPI(enhancePrompt, '1024x1024')
+      const invokePromise = callGenerateAPI(enhancePrompt, '1024x1024', originalImage)
       const timeoutPromise = new Promise<{ success: false; error: string }>((resolve) => {
         setTimeout(() => resolve({ success: false, error: 'AI修图超时（>180秒）。墨行API响应较慢，建议稍后重试或检查网络。' }), TIMEOUT_MS)
       })
@@ -592,10 +614,15 @@ ${brand.brandName ? `品牌风格参考：${brand.brandName} - ${brand.stylePref
 
     setIsGenerating(true)
     const results: GeneratedImage[] = []
+    // 修复：保存每个任务对应的 platConfig/posConfig 闭包引用，避免后续从 ID 反解析（含下划线的 platKey 会被 split 错误切分）
+    const taskMetas: Array<{ platConfig: typeof PLATFORMS[number]; posConfig: typeof PLATFORMS[number]['positions'][number] }> = []
 
     // 笛卡尔积：位置 × 风格变体 × 带/不带文字
     for (const posFullKey of Array.from(selectedPositions)) {
-      const [platKey, posKey] = posFullKey.split(':')
+      const sepIdx = posFullKey.indexOf(':')
+      if (sepIdx < 0) continue
+      const platKey = posFullKey.slice(0, sepIdx)
+      const posKey = posFullKey.slice(sepIdx + 1)
       const platConfig = PLATFORMS.find(p => p.key === platKey)
       if (!platConfig) continue
       const posConfig = platConfig.positions.find(p => p.key === posKey)
@@ -607,7 +634,7 @@ ${brand.brandName ? `品牌风格参考：${brand.brandName} - ${brand.stylePref
           const imgId = `img_${Date.now()}_${posFullKey}_${variant}_${withText ? 't' : 'n'}_${Math.random().toString(36).slice(2, 6)}`
           results.push({
             id: imgId,
-            platform: platKey,
+            platform: platKey as PlatformKey,
             platformLabel: `${platConfig.label} - ${posConfig.label} (${tag})`,
             b64Data: '',
             prompt: '',
@@ -616,6 +643,7 @@ ${brand.brandName ? `品牌风格参考：${brand.brandName} - ${brand.stylePref
             variant,
             withText,
           })
+          taskMetas.push({ platConfig, posConfig })
         }
       }
     }
@@ -624,24 +652,35 @@ ${brand.brandName ? `品牌风格参考：${brand.brandName} - ${brand.stylePref
     // 逐个任务生成
     for (let i = 0; i < results.length; i++) {
       const item = results[i]
-      // 解析 platformKey:positionKey（id 格式：img_<ts>_<plat:pos>_<variant>_<t|n>_<rand>）
-      const parts = item.id.split('_')
-      const posFullKey = parts[2] || ''
-      const [platKey, posKey] = posFullKey.split(':')
-      const platConfig = PLATFORMS.find(p => p.key === platKey)
-      const posConfig = platConfig?.positions.find(p => p.key === posKey)
+      const meta = taskMetas[i]
 
-      if (!platConfig || !posConfig) {
+      if (!meta || !meta.platConfig || !meta.posConfig) {
         setGeneratedImages(prev => prev.map(img =>
           img.id === item.id ? { ...img, status: 'error' as const, error: '位置配置不存在' } : img
         ))
         continue
       }
+      const { platConfig, posConfig } = meta
 
-      const styleLabel = STYLE_PRESETS.find(s => s.key === brand.stylePreference)?.label.split(' ')[1] || ''
-      const variantDesc = STYLE_VARIANTS.find(v => v.key === item.variant)?.desc || ''
+      // 🔧 B096修复: 使用风格描述而非标签,避免暴露"江湖风"等元数据
+      const stylePreset = STYLE_PRESETS.find(s => s.key === brand.stylePreference)
+      const styleDesc = stylePreset?.desc || '现代简约、干净利落'
+      const variantConfig = STYLE_VARIANTS.find(v => v.key === item.variant)
+      const variantDesc = variantConfig?.desc || ''
 
-      const prompt = `为餐饮品牌「${brand.brandName || '美味餐厅'}」设计一张专业的${platConfig.category}平台配图：
+      // 🔧 B096修复: 色彩描述转换为自然语言,完全避免暴露十六进制色卡代码
+      const getColorDesc = (hex: string): string => {
+        const upper = hex.toUpperCase()
+        if (upper.includes('E1') || upper.includes('F4') || upper.includes('EF4')) return '暖色系红橙调'
+        if (upper.includes('57') || upper.includes('34') || upper.includes('10B981')) return '清新绿色调'
+        if (upper.includes('3B') || upper.includes('60') || upper.includes('3B82F6')) return '沉稳蓝色调'
+        if (upper.includes('F59') || upper.includes('FBBF')) return '活力橙黄调'
+        if (upper.includes('A855') || upper.includes('8B5')) return '优雅紫色调'
+        return '温暖自然色调'
+      }
+      const colorDesc = getColorDesc(brand.primaryColor)
+
+      let prompt = `为餐饮品牌「${brand.brandName || '美味餐厅'}」设计一张专业的${platConfig.category}平台配图：
 
 【菜品信息】
 菜名：${dishInfo.name}
@@ -652,41 +691,43 @@ ${dishInfo.price && item.withText ? `价格：${dishInfo.price}` : ''}
 【设计规格】
 平台：${platConfig.label}
 位置用途：${posConfig.label}
-尺寸：${posConfig.size}px（比例 ${posConfig.ratio}）
-风格：${styleLabel}${brand.customStyleDesc ? ' · ' + brand.customStyleDesc : ''}
-主色调：${brand.primaryColor}
-辅色调：${brand.secondaryColor}
-${brand.slogan && item.withText ? `Slogan：${brand.slogan}` : ''}
+画面方向：${posConfig.ratio.startsWith('16') || posConfig.ratio.includes('横') ? '横版构图' : posConfig.ratio === '1:1' ? '方形构图' : '竖版构图'}
+视觉风格：${styleDesc}${brand.customStyleDesc ? '，' + brand.customStyleDesc : ''}
+色调方向：${colorDesc}
+${brand.slogan && item.withText ? `品牌口号：${brand.slogan}` : ''}
 
-【风格变体 — ${item.variant}版】
+【风格调性】
 ${variantDesc}
 
 【文字版本】
 ${item.withText
-  ? `- 在画面合适位置加入菜名/文案/价格等核心文字信息（中文为主，避免错别字）
-- 文字排版要符合${item.variant}风格的视觉调性
+  ? `- 在画面合适位置加入菜名、文案、价格等核心文字信息（中文为主，避免错别字）
+- 文字排版要符合整体视觉调性
 - 文字与背景对比清晰可读`
-  : `- ⚠️ 严禁在画面任何位置出现任何文字、字符、Slogan、价格、品牌名（LOGO 除外）
-- 这是一张"纯图版"，画面只能有菜品和场景元素
+  : `- ⚠️ 严禁在画面任何位置出现任何文字、字符、口号、价格、品牌名（LOGO 除外）
+- 这是一张纯图版，画面只能有菜品和场景元素
 - 让构图、光影、留白本身讲故事，便于后期自由排版`}
 
 【位置特殊要求】
-- ${posConfig.requirement}
-- 最低输入尺寸要求：${posConfig.minSize}
+${posConfig.requirement}
 
 【出图要求】
 - 商业级高清画质，可直接用于平台上传
 - 菜品主体清晰突出，视觉焦点明确
-- 符合${platConfig.label}平台「${posConfig.label}」的图片规范和安全区要求
+- 符合${platConfig.label}平台的图片规范和安全区要求
 - 整体风格统一，有品牌辨识度和食欲感
-- 输出尺寸严格按 ${posConfig.size}px 生成
-- ${designPurposes.includes('重要产品上新') ? '突出新品感，吸引眼球' : ''}
-- ${designPurposes.includes('活动促销推广') ? '包含促销信息视觉引导' : ''}
-${logoData ? `
+${designPurposes.includes('重要产品上新') ? '- 突出新品感，吸引眼球\n' : ''}${designPurposes.includes('活动促销推广') ? '- 包含促销信息视觉引导\n' : ''}${logoData ? `
 【品牌LOGO】
 - 必须将品牌LOGO设计在图片上（位置：右下角或左上角，不遮挡菜品主体）
 - LOGO保持原始比例和颜色，清晰可辨，大小适中（约占画面5%-8%面积）
-- 如果LOGO与背景对比度不足，添加半透明底衬确保可读性` : ''}`
+- 如果LOGO与背景对比度不足，添加半透明底衬确保可读性
+` : ''}
+【⛔ 绝对禁止】
+- 禁止在图片上添加任何字段标签（如"菜名："、"价格："、"卖点："、"文案："等）
+- 禁止在图片上显示颜色代码（如#E11D48、#F43F5E等十六进制色值）
+- 禁止在图片上显示风格名称标签（如"江湖风"、"简约版"、"活力版"等）
+- 禁止在图片上显示尺寸信息（如"1024x1024"、"16:9"等）
+- 只渲染用户填写的实际内容（菜名、价格数字、卖点文案），不要渲染任何UI模板的元数据`
 
       try {
         const apiSize = posConfig.ratio.startsWith('16')
@@ -699,7 +740,20 @@ ${logoData ? `
                 ? '2048x1024'
                 : '1024x1024'
 
-        const result = await callGenerateAPI(prompt, apiSize)
+      // 🔧 B095 v5.5.24: 批量生成走图生图模式
+      // - 用户做了AI修图 → 用 enhancedImage 作参考图
+      // - 用户跳过AI修图 → 用 originalImage 作参考图
+      const refImage = enhancedImage || originalImage || undefined
+
+      // 图生图模式：替换 prompt 开头，加入参考图引导语
+      if (refImage) {
+        prompt = prompt.replace(
+          `为餐饮品牌「${brand.brandName || '美味餐厅'}」设计一张专业的${platConfig.category}平台配图：`,
+          `基于参考图中的菜品，为餐饮品牌「${brand.brandName || '美味餐厅'}」设计一张专业的${platConfig.category}平台配图。\n参考图中的菜品是设计的核心主体，必须保留其真实外观、色泽和质感，在此基础上进行商业级视觉包装：`
+        )
+      }
+
+        const result = await callGenerateAPI(prompt, apiSize, refImage)
 
         // 改动4+6：成功一张就计 1 次额度
         if (result.success) incrementDailyCount(1)
@@ -734,7 +788,9 @@ ${logoData ? `
       i.id === imgId ? { ...i, status: 'generating' as const, error: undefined } : i
     ))
 
-    const result = await callGenerateAPI(target.prompt, target.size.replace('x', 'x'))
+    // 🔧 B095 v5.5.24: 重绘也走图生图，与批量生成保持一致
+    const refImage = enhancedImage || originalImage || undefined
+    const result = await callGenerateAPI(target.prompt, target.size.replace('x', 'x'), refImage)
     setGeneratedImages(prev => prev.map(i =>
       i.id === imgId
         ? {
@@ -1513,7 +1569,7 @@ ${logoData ? `
                   AI修图中... ({enhanceElapsed}s / 120s超时)
                 </p>
                 <p style={{ fontSize: '11px', color: '#9CA3AF', margin: 0 }}>
-                  gpt-image-2 生图中，通常需要30-60秒
+                  AI 生图中，通常需要30-60秒
                 </p>
                 <button onClick={handleCancelEnhance}
                   style={{
@@ -1538,17 +1594,6 @@ ${logoData ? `
                 display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                 minHeight: '200px', background: '#FAFAFA', gap: '12px',
               }}>
-                {/* ⚠️ 修图红线警告 */}
-                <div style={{
-                  padding: '8px 14px', background: '#ECFDF5', borderRadius: '8px',
-                  border: '1px solid #FECACA', width: '100%', maxWidth: '420px',
-                }}>
-                  <p style={{ fontSize: '11.5px', color: '#059669', margin: 0, lineHeight: 1.6, fontWeight: 600 }}>
-                    ⚠️ <b>修图红线：</b>AI修图必须在原图基础上优化（亮度/对比度/去噪/色彩增强），<br/>
-                    <span style={{ color: '#57CC86' }}>严禁生成与原图内容不同的图片！</span><br/>
-                    （如原图是炒青菜，修图后绝不能变成回锅肉）
-                  </p>
-                </div>
                 <Sparkles size={32} style={{ color: '#D1D5DB' }} />
                 <p style={{ fontSize: '13px', color: '#9CA3AF', margin: 0, textAlign: 'center' }}>
                   点击下方按钮进行AI智能修图<br/>
@@ -2090,7 +2135,7 @@ ${logoData ? `
           padding: '4px 12px', borderRadius: '20px', fontSize: '11px', fontWeight: 600,
           background: '#E6F7EF', color: '#57CC86', border: '1px solid #A7F3D0',
         }}>
-          gpt-image-2
+          AI
         </span>
       </div>
 

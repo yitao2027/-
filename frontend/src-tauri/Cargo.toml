@@ -1,6 +1,6 @@
 [package]
 name = "shaoziclaw-app"
-version = "5.5.22"
+version = "5.5.24"
 description = "勺子Claw - 餐饮人的超级AI大脑"
 authors = ["ShaoziClaw Team"]
 edition = "2021"
@@ -31,6 +31,10 @@ arrow-array = "57"
 arrow-schema = "57"
 log = "0.4"
 tauri-plugin-log = "2"
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+uuid = { version = "1", features = ["v4"] }
 
 [profile.dev]
 incremental = true

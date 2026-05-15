@@ -27,6 +27,7 @@ mod knowledge_evolution; // 🌱 知识演进模块（v5.2新增）
 mod claw_log; // 📋 统一日志系统（v5.2.1新增）
 mod local_fs; // 🦞 v5.3.9: 龙虾级本地文件系统权限
 mod resource_unpacker; // 📦 v5.5.19: 安装包资源解包器（知识库随包打包）
+mod oss_uploader; // ☁️ v5.5.24: 阿里云OSS图片上传（B095图生图）
 
 pub use firecrawl_opinion::{firecrawl_status, firecrawl_search, firecrawl_scrape, firecrawl_deep};
 // ⏰ 定时任务 Commands
@@ -695,64 +696,65 @@ async fn image_generate(prompt: String, size: Option<String>) -> Result<ImageGen
 }
 
 /// 图生图变体（暴露 reference_image_url 给前端）
-/// 用法：前端传一个 https URL（可走 ImagePicker 上传到墨行/COS拿到URL）
+/// v5.5.22 hotfix: 兼容两种入参格式
+///   1. https URL（如 https://xxx.com/a.jpg）
+///   2. base64 data URL（如 data:image/png;base64,xxxxx）— 直接透传给墨行 body["image"]
 #[tauri::command]
 async fn image_generate_with_ref(prompt: String, reference_image_url: String) -> Result<ImageGenerateResult, String> {
+    let kind = if reference_image_url.starts_with("data:") { "base64" }
+               else if reference_image_url.starts_with("http") { "url" }
+               else { "unknown" };
+    log::info!("[IMAGE_GEN] image_generate_with_ref 入参: kind={}, len={}", kind, reference_image_url.len());
     image_generate_inner(prompt, Some(reference_image_url)).await
 }
 
 async fn image_generate_inner(prompt: String, image_url: Option<String>) -> Result<ImageGenerateResult, String> {
-    log::info!("[IMAGE_GEN] 并行启动2个墨行生图模型: prompt长度={}, 图生图={}",
-        prompt.len(), image_url.is_some());
+    let is_img2img = image_url.is_some();
+    log::info!("[IMAGE_GEN] 生图请求: prompt长度={}, 图生图={}", prompt.len(), is_img2img);
     let start = std::time::Instant::now();
     let url_ref = image_url.as_deref();
 
-    // 🔧 v5.5.23: 改 select! 取最快胜出（不再 join! 阻塞等所有）
-    // 任一成功即返回；都失败时聚合错误
-    let banana = try_moxing_banana2(&prompt, url_ref);
-    let seedream = try_moxing_seedream(&prompt, url_ref);
-    tokio::pin!(banana);
-    tokio::pin!(seedream);
-
-    let mut banana_err: Option<String> = None;
-    let mut seedream_err: Option<String> = None;
-
-    loop {
-        tokio::select! {
-            r = &mut banana, if banana_err.is_none() => {
-                match r {
-                    Ok(ok) => {
-                        log::info!("[IMAGE_GEN] ✅ Banana2 胜出,耗时{:?}", start.elapsed());
-                        return Ok(ok);
+    // 🔧 B095修复: 图生图场景只用Banana2(支持base64),跳过Seedream(仅支持URL)
+    // 🔧 B097修复: 文生图场景改为串行策略 - Bana2 60秒超时→降级Seedream
+    if is_img2img {
+        log::info!("[IMAGE_GEN] 图生图模式: 仅使用Banana2(Seedream不支持base64)");
+        let result = try_moxing_banana2(&prompt, url_ref).await?;
+        // ☁️ B095 v5.5.24: 成功后异步上传到OSS(不阻塞前端)
+        if result.success {
+            if let Some(b64) = &result.b64_data {
+                let b64_clone = b64.clone();
+                tokio::spawn(async move {
+                    match oss_uploader::upload_image_to_oss(&b64_clone).await {
+                        Ok(url) => log::info!("[IMAGE_GEN][OSS] 图生图结果已上传: {}", url),
+                        Err(e) => log::warn!("[IMAGE_GEN][OSS] 上传失败(不影响前端): {}", e),
                     }
-                    Err(e) => {
-                        log::warn!("[IMAGE_GEN] Banana2 失败: {}", e);
-                        banana_err = Some(e);
-                        if seedream_err.is_some() { break; }
-                    }
-                }
-            }
-            r = &mut seedream, if seedream_err.is_none() => {
-                match r {
-                    Ok(ok) => {
-                        log::info!("[IMAGE_GEN] ✅ Seedream4.5 胜出,耗时{:?}", start.elapsed());
-                        return Ok(ok);
-                    }
-                    Err(e) => {
-                        log::warn!("[IMAGE_GEN] Seedream4.5 失败: {}", e);
-                        seedream_err = Some(e);
-                        if banana_err.is_some() { break; }
-                    }
-                }
+                });
             }
         }
+        return Ok(result);
     }
 
-    Err(format!(
-        "所有图片模型失败 | Banana2: {} | Seedream4.5: {}",
-        banana_err.unwrap_or_default(),
-        seedream_err.unwrap_or_default()
-    ))
+    // 文生图: 串行降级策略
+    log::info!("[IMAGE_GEN] 文生图模式: 先试Bana2(60s超时)→降级Seedream");
+    
+    // 先试Banana2,60秒超时
+    let banana_future = try_moxing_banana2(&prompt, url_ref);
+    match tokio::time::timeout(std::time::Duration::from_secs(60), banana_future).await {
+        Ok(Ok(result)) => {
+            log::info!("[IMAGE_GEN] ✅ Bana2成功,耗时{:?}", start.elapsed());
+            return Ok(result);
+        }
+        Ok(Err(e)) => {
+            log::warn!("[IMAGE_GEN] Bana2失败({}),立即降级Seedream", e);
+            // Bana2失败,立即降级
+            return try_moxing_seedream(&prompt, url_ref).await;
+        }
+        Err(_) => {
+            log::info!("[IMAGE_GEN] Bana2超时(>60s),降级Seedream");
+            // 超时,降级Seedream
+            return try_moxing_seedream(&prompt, url_ref).await;
+        }
+    }
 }
 
 /// 墨行 API key（与 compress_memory 共用）
@@ -940,8 +942,11 @@ async fn download_url_to_result(url: &str, model_label: &str) -> Result<ImageGen
     }
 }
 
-/// v5.5.20 T6: 墨行 Banana2（Gemini-3.1-Flash-Image-Preview）
-/// 文生图 size=1k, aspect_ratio=16:9；图生图额外携带 image 字段
+/// v5.5.24 修复 B096: 墨行 Banana2（Gemini-3.1-Flash-Image-Preview）
+/// 文生图: /media/generations 接口, size=1k, aspect_ratio=16:9
+/// 图生图(单图): /media/generations 接口 + "image": "url" 字段（按墨行官方文档）
+/// 图生图(多图): /media/generations 接口 + "reference_images": ["url1","url2"] 数组
+/// ⚠️ 注意: Banana2 图生图的 image 字段只支持 https URL,不支持 base64 data URL
 async fn try_moxing_banana2(prompt: &str, image_url: Option<&str>) -> Result<ImageGenerateResult, String> {
     let mut body = serde_json::json!({
         "model": "Gemini-3.1-Flash-Image-Preview",
@@ -952,9 +957,177 @@ async fn try_moxing_banana2(prompt: &str, image_url: Option<&str>) -> Result<Ima
         "response_format": "url",
     });
     if let Some(u) = image_url {
+        // 🔧 B096修复: Banana2 图生图按墨行官方示例,直接加 image 字段(单图字符串)
         body["image"] = serde_json::Value::String(u.to_string());
+        log::info!("[IMAGE_GEN][Banana2] 图生图模式(/media/generations + image): image前50字符={}", 
+            &u.chars().take(50).collect::<String>());
+    } else {
+        log::info!("[IMAGE_GEN][Banana2] 文生图模式(/media/generations)");
     }
+    let body_log = sanitize_body_for_log(&body);
+    log::info!("[IMAGE_GEN][Banana2] 请求body(脱敏): {}", body_log);
     submit_and_poll_moxing(body, "Banana2").await
+}
+
+/// 🔧 B095修复方案C: Banana2图生图走 /chat/completions 接口
+/// Gemini-3.1-Flash-Image-Preview 图生图必须用 OpenAI 兼容的 chat completions 格式:
+/// messages[].content[] 里放 text + image_url，image_url.url 支持 data:image/...;base64,...
+async fn try_moxing_banana2_img2img(prompt: &str, image_data: &str) -> Result<ImageGenerateResult, String> {
+    let body = serde_json::json!({
+        "model": "Gemini-3.1-Flash-Image-Preview",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": image_data
+                        }
+                    }
+                ]
+            }
+        ],
+        "image": {
+            "aspect_ratio": "16:9",
+            "image_size": "1K"
+        }
+    });
+    log::info!("[IMAGE_GEN][Banana2-img2img] 发送chat/completions请求, prompt长度={}", prompt.len());
+    submit_chat_completions_image(body, "Banana2-img2img").await
+}
+
+/// 🔧 B095: chat/completions 图生图提交+解析
+/// 与 submit_and_poll_moxing 不同: 这是同步返回(非异步任务),响应里直接有图片URL/base64
+async fn submit_chat_completions_image(body: serde_json::Value, model_label: &str) -> Result<ImageGenerateResult, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120)) // chat completions 可能较慢
+        .build()
+        .map_err(|e| format!("HTTP客户端失败: {}", e))?;
+
+    let url = format!("{}/chat/completions", MOXING_API_BASE);
+    log::info!("[IMAGE_GEN][{}] 提交chat/completions: {}", model_label, url);
+
+    let resp = client.post(&url)
+        .header("Authorization", format!("Bearer {}", MOXING_API_KEY))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {}", e))?;
+
+    let status = resp.status();
+    let json: serde_json::Value = resp.json().await
+        .map_err(|e| format!("响应解析失败: {}", e))?;
+
+    if !status.is_success() {
+        let err_msg = json.get("error")
+            .and_then(|e| if e.is_string() { e.as_str() } else { e.get("message").and_then(|m| m.as_str()) })
+            .or_else(|| json.get("message").and_then(|m| m.as_str()))
+            .unwrap_or("未知错误");
+        log::error!("[IMAGE_GEN][{}] HTTP错误 {}: {}", model_label, status, err_msg);
+        return Err(format!("HTTP {}: {}", status, err_msg));
+    }
+
+    log::info!("[IMAGE_GEN][{}] 响应状态={}, 解析图片...", model_label, status);
+
+    // 解析 chat/completions 响应: choices[0].message.content 可能是:
+    // 1. 纯文本含图片URL
+    // 2. 多模态数组 [{type:"image_url", image_url:{url:"..."}}]
+    // 3. 直接返回 data 字段含图片
+    
+    // 尝试从 choices[0].message.content 提取图片
+    if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
+        if let Some(first_choice) = choices.first() {
+            if let Some(message) = first_choice.get("message") {
+                if let Some(content) = message.get("content") {
+                    // content 可能是字符串或数组
+                    if let Some(content_arr) = content.as_array() {
+                        // 多模态数组: 找 type=image_url 的项
+                        for item in content_arr {
+                            if item.get("type").and_then(|t| t.as_str()) == Some("image_url") {
+                                if let Some(img_url) = item.get("image_url")
+                                    .and_then(|iu| iu.get("url"))
+                                    .and_then(|u| u.as_str()) {
+                                    log::info!("[IMAGE_GEN][{}] ✅ 从content数组提取到图片URL", model_label);
+                                    if img_url.starts_with("data:") {
+                                        // 直接是base64
+                                        let b64 = img_url.split(',').nth(1).unwrap_or(img_url);
+                                        return Ok(ImageGenerateResult { success: true, b64_data: Some(b64.to_string()), error: None });
+                                    } else {
+                                        // 是URL,下载转base64
+                                        return download_url_to_result(img_url, model_label).await;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(content_str) = content.as_str() {
+                        // 纯文本: 可能包含markdown图片链接 ![](url) 或直接URL
+                        if let Some(url) = extract_url_from_text(content_str) {
+                            log::info!("[IMAGE_GEN][{}] ✅ 从content文本提取到图片URL", model_label);
+                            return download_url_to_result(&url, model_label).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // fallback: 尝试从顶层提取(兼容某些中转站格式)
+    if let Some(direct_url) = extract_image_url_from_moxing(&json) {
+        log::info!("[IMAGE_GEN][{}] ✅ fallback从顶层提取到图片URL", model_label);
+        return download_url_to_result(&direct_url, model_label).await;
+    }
+
+    log::error!("[IMAGE_GEN][{}] ❌ 无法从响应提取图片: {}", model_label, 
+        &json.to_string().chars().take(500).collect::<String>());
+    Err(format!("无法从chat/completions响应提取图片"))
+}
+
+/// 从文本中提取图片URL(支持markdown格式和裸URL)
+fn extract_url_from_text(text: &str) -> Option<String> {
+    // 1. markdown图片: ![...](url)
+    if let Some(start) = text.find("![") {
+        if let Some(paren_start) = text[start..].find('(') {
+            if let Some(paren_end) = text[start + paren_start..].find(')') {
+                let url = &text[start + paren_start + 1..start + paren_start + paren_end];
+                if url.starts_with("http") {
+                    return Some(url.to_string());
+                }
+            }
+        }
+    }
+    // 2. 裸URL (https://...png/jpg/webp)
+    for word in text.split_whitespace() {
+        let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != ':' && c != '/' && c != '.' && c != '-' && c != '_' && c != '?' && c != '&' && c != '=');
+        if w.starts_with("http") && (w.contains(".png") || w.contains(".jpg") || w.contains(".jpeg") || w.contains(".webp") || w.contains("/image")) {
+            return Some(w.to_string());
+        }
+    }
+    None
+}
+
+/// 🔧 B095辅助: 脱敏body日志,base64字段只保留前50字符
+fn sanitize_body_for_log(body: &serde_json::Value) -> String {
+    let mut clone = body.clone();
+    if let Some(obj) = clone.as_object_mut() {
+        for key in ["image", "image_url", "reference_images", "reference_image", "input_image"] {
+            if let Some(v) = obj.get_mut(key) {
+                if let Some(s) = v.as_str() {
+                    if s.len() > 50 {
+                        let preview: String = s.chars().take(50).collect();
+                        *v = serde_json::Value::String(format!("{}...[len={}]", preview, s.len()));
+                    }
+                }
+            }
+        }
+    }
+    clone.to_string()
 }
 
 /// 下载图片URL并转为base64
@@ -978,8 +1151,9 @@ async fn download_image_to_b64(url: &str) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
-/// v5.5.20 T6: 墨行 Seedream4.5（doubao-seedream-4-5-251128）
-/// 文生图 size=1728x2304；图生图额外携带 image 字段
+/// v5.5.24 修复 B096: 墨行 Seedream4.5（doubao-seedream-4-5-251128）
+/// 文生图 size=1728x2304；图生图额外携带 reference_images 数组字段
+/// ⚠️ 注意: reference_images 必须是数组格式 ["url"],不是字符串
 async fn try_moxing_seedream(prompt: &str, image_url: Option<&str>) -> Result<ImageGenerateResult, String> {
     let mut body = serde_json::json!({
         "model": "doubao-seedream-4-5-251128",
@@ -989,7 +1163,10 @@ async fn try_moxing_seedream(prompt: &str, image_url: Option<&str>) -> Result<Im
         "response_format": "url",
     });
     if let Some(u) = image_url {
-        body["image"] = serde_json::Value::String(u.to_string());
+        // 🔧 B096修复: reference_images 必须是数组格式(墨行官方文档)
+        body["reference_images"] = serde_json::json!([u]);
+        log::info!("[IMAGE_GEN][Seedream4.5] 图生图模式: reference_images=[前50字符={}]", 
+            &u.chars().take(50).collect::<String>());
     }
     submit_and_poll_moxing(body, "Seedream4.5").await
 }
