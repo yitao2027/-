@@ -721,9 +721,9 @@ async fn image_generate_inner(prompt: String, image_url: Option<String>) -> Resu
             log::info!("[IMAGE_GEN] 检测到 base64 参考图(len={}),先上传 OSS...", u.len());
             // 剥离 "data:image/xxx;base64," 前缀,拿到纯 base64
             let b64_pure = u.split(',').nth(1).unwrap_or(u);
-            match oss_uploader::upload_image_to_oss(b64_pure).await {
+            match oss_uploader::upload_and_get_signed_url(b64_pure).await {
                 Ok(oss_url) => {
-                    log::info!("[IMAGE_GEN] ✅ 参考图已上传OSS: {}", oss_url);
+                    log::info!("[IMAGE_GEN] ✅ 参考图已上传OSS(预签名URL): {}", &oss_url[..80.min(oss_url.len())]);
                     Some(oss_url)
                 }
                 Err(e) => {

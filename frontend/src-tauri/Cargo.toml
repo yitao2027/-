@@ -1,6 +1,6 @@
 [package]
 name = "shaoziclaw-app"
-version = "5.5.24"
+version = "5.5.25"
 description = "勺子Claw - 餐饮人的超级AI大脑"
 authors = ["ShaoziClaw Team"]
 edition = "2021"
@@ -35,6 +35,7 @@ sha2 = "0.10"
 sha1 = "0.10"
 hmac = "0.12"
 uuid = { version = "1", features = ["v4"] }
+urlencoding = "2"
 
 [profile.dev]
 incremental = true
