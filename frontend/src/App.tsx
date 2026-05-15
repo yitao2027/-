@@ -199,7 +199,7 @@ checkAuth()
     // 空间&选址
     'm11-location':   { type: 'space',    title: '选址评估专家',     emoji: '🧭', skillName: 'location-thousand-score' },
     'm12-space':      { type: 'space',    title: '空间设计专家',     emoji: '🏗️', skillName: 'L2-space-efficiency' },
-    'm9-supply':      { type: 'ops',      title: '供应链专家',       emoji: '🔗', skillName: 'procurement-supply-chain' },
+    'm9-supply':      { type: 'ops',      title: '供应链专家',       emoji: '🔗', skillName: 'L1-procurement' },
     'm20-saas':       { type: 'ops',      title: '系统集成专家',     emoji: '🔌' },
     // 🆕 v4.9.0 三大新专家
     'm21-scientific-scheduling': { type: 'hr',   title: '科学排班专家',   emoji: '📊', skillName: 'scientific-scheduling' },

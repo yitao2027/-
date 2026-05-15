@@ -340,54 +340,110 @@ fn build_system_prompt_with_redline(redline_addition: Option<&str>, skill_name: 
     prompt
 }
 
-/// 🔧 v5.5.28 B102: 从 ~/.workbuddy/skills/ 下加载 SKILL.md 内容
-/// 搜索路径优先级：
-/// 1. ~/.workbuddy/skills/shaozi-claw-v4/_coordinators/<skill_name>/SKILL.md (orchestrator类)
-/// 2. ~/.workbuddy/skills/shaozi-claw-v4/<category>/<skill_name>/SKILL.md
-/// 3. ~/.workbuddy/skills/<skill_name>/SKILL.md (顶层user-level)
-/// 找不到返回 None，避免阻塞主流程
+/// 🔧 v5.5.29 B103 全面重写：递归扫描 ~/.workbuddy/skills/**/SKILL.md 建立索引
+///
+/// 背景：v5.5.28 hard-code 了 6 条候选路径，但实际磁盘上 22 个专家分布在：
+///   - shaozi-claw/L1部门基础/<name>/SKILL.md          （v1 老结构，中文目录）
+///   - shaozi-claw/L2专项能力/<name>/SKILL.md
+///   - shaozi-claw/L3战略决策/<name>/SKILL.md
+///   - shaozi-claw-v2/L3战略决策/<name>/SKILL.md
+///   - shaozi-claw-v4/L1-daily/<name>/SKILL.md         （扁平结构）
+///   - shaozi-claw-v4/L1-daily/<sub>/<name>/SKILL.md   （双层嵌套）
+///   - shaozi-claw-v4/L2-advanced/<sub>/<name>/SKILL.md
+///   - shaozi-claw-v4/L3-strategy/<sub>/<name>/SKILL.md
+///   - shaozi-claw-v4/_coordinators/<name>/SKILL.md
+///   - shaozi-claw-v4/L4-ecosystem/<name>/SKILL.md
+///   - <name>/SKILL.md                                  （顶层）
+///
+/// 修复方案：进程启动时 walk skills 目录建立 HashMap<basename, PathBuf>，
+/// 多次命中按优先级（v4 > v2 > v1 > 顶层）保留最高优先级。
+/// 同名 skill 仅保留一份索引，运行时 O(1) 查找。
+///
+/// 找不到返回 None，避免阻塞主流程。
 fn load_skill_md(skill_name: &str) -> Option<String> {
+    let index = get_skill_index();
+    let path = index.get(skill_name)?;
+
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            crate::claw_log::log_info("AI_ENGINE", &format!("load_skill_md: hit {} ({} bytes)", path.display(), content.len()));
+            // 截断防止 system prompt 过长（~8K 字符上限）
+            let truncated = if content.chars().count() > 8000 {
+                let mut s = String::new();
+                for (i, c) in content.chars().enumerate() {
+                    if i >= 8000 { break; }
+                    s.push(c);
+                }
+                s.push_str("\n\n[...SKILL.md 内容过长已截断...]");
+                s
+            } else {
+                content
+            };
+            Some(truncated)
+        }
+        Err(e) => {
+            crate::claw_log::log_info("AI_ENGINE", &format!("load_skill_md: read fail {} {}", path.display(), e));
+            None
+        }
+    }
+}
+
+/// 全局 SKILL.md 索引：basename → 完整路径
+/// 进程生命周期内只扫描一次（首次调用 load_skill_md 时触发）
+fn get_skill_index() -> &'static std::collections::HashMap<String, std::path::PathBuf> {
+    use std::sync::OnceLock;
+    static INDEX: OnceLock<std::collections::HashMap<String, std::path::PathBuf>> = OnceLock::new();
+    INDEX.get_or_init(|| build_skill_index())
+}
+
+/// 构建 SKILL.md 索引：递归扫描 ~/.workbuddy/skills/，最大深度 6
+/// 优先级（高→低）：shaozi-claw-v4 > shaozi-claw-v3 > shaozi-claw-v2 > shaozi-claw > 顶层
+fn build_skill_index() -> std::collections::HashMap<String, std::path::PathBuf> {
+    use std::collections::HashMap;
     use std::path::PathBuf;
-    let home = dirs::home_dir()?;
-    let base: PathBuf = home.join(".workbuddy").join("skills");
+    let mut idx: HashMap<String, PathBuf> = HashMap::new();
+    let mut prio: HashMap<String, u8> = HashMap::new();
 
-    // 候选路径列表
-    let candidates: Vec<PathBuf> = vec![
-        base.join("shaozi-claw-v4").join("_coordinators").join(skill_name).join("SKILL.md"),
-        base.join("shaozi-claw-v4").join("L0").join(skill_name).join("SKILL.md"),
-        base.join("shaozi-claw-v4").join("L1").join(skill_name).join("SKILL.md"),
-        base.join("shaozi-claw-v4").join("L2").join(skill_name).join("SKILL.md"),
-        base.join("shaozi-claw-v4").join("L3").join(skill_name).join("SKILL.md"),
-        base.join(skill_name).join("SKILL.md"),
-    ];
+    let home = match dirs::home_dir() { Some(h) => h, None => return idx };
+    let root = home.join(".workbuddy").join("skills");
+    if !root.exists() { return idx; }
 
-    for path in &candidates {
-        if path.exists() {
-            match std::fs::read_to_string(path) {
-                Ok(content) => {
-                    crate::claw_log::log_info("AI_ENGINE", &format!("load_skill_md: hit {} ({} bytes)", path.display(), content.len()));
-                    // 截断防止 system prompt 过长（~8K 字符上限）
-                    let truncated = if content.chars().count() > 8000 {
-                        let mut s = String::new();
-                        for (i, c) in content.chars().enumerate() {
-                            if i >= 8000 { break; }
-                            s.push(c);
+    fn priority_of(path: &std::path::Path) -> u8 {
+        let s = path.to_string_lossy();
+        if s.contains("shaozi-claw-v4") { 100 }
+        else if s.contains("shaozi-claw-v3") { 80 }
+        else if s.contains("shaozi-claw-v2") { 60 }
+        else if s.contains("shaozi-claw/") || s.contains("shaozi-claw\\") { 40 }
+        else { 20 }
+    }
+
+    fn walk(dir: &std::path::Path, depth: u8, max_depth: u8, idx: &mut std::collections::HashMap<String, std::path::PathBuf>, prio: &mut std::collections::HashMap<String, u8>) {
+        if depth > max_depth { return; }
+        let entries = match std::fs::read_dir(dir) { Ok(e) => e, Err(_) => return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // 检查该目录下是否有 SKILL.md
+                let skill_md = path.join("SKILL.md");
+                if skill_md.is_file() {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        let p = priority_of(&skill_md);
+                        let cur = prio.get(name).copied().unwrap_or(0);
+                        if p > cur {
+                            idx.insert(name.to_string(), skill_md.clone());
+                            prio.insert(name.to_string(), p);
                         }
-                        s.push_str("\n\n[...SKILL.md 内容过长已截断...]");
-                        s
-                    } else {
-                        content
-                    };
-                    return Some(truncated);
+                    }
                 }
-                Err(e) => {
-                    crate::claw_log::log_info("AI_ENGINE", &format!("load_skill_md: read fail {} {}", path.display(), e));
-                }
+                // 继续递归
+                walk(&path, depth + 1, max_depth, idx, prio);
             }
         }
     }
-    crate::claw_log::log_info("AI_ENGINE", &format!("load_skill_md: not found for {}", skill_name));
-    None
+
+    walk(&root, 0, 6, &mut idx, &mut prio);
+    crate::claw_log::log_info("AI_ENGINE", &format!("build_skill_index: indexed {} SKILL.md files under {}", idx.len(), root.display()));
+    idx
 }
 
 // ============================================================
