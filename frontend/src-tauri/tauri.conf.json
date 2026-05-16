@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "勺子Claw",
-  "version": "5.5.32",
+  "version": "5.5.33",
   "identifier": "com.shaoziclaw.app",
   "build": {
     "frontendDist": "../dist",
@@ -71,9 +71,8 @@
       "endpoints": [
         "https://releases.shaoziclaw.com/latest.json"
       ],
-      "signature": "",
       "dialog": false,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERGMDI0QTQ1REI2RTBENEUKUldST0RXN2JSVW9DMzBLc2YrWWNCVHpLdE1VUWN2VVpYY3FKb09adTdaQ2NOeEtQb0tNbnREM3IK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgQTE5NDU2MTA1NUM4Nzk5RApSV1NkZWNoVkVGYVVvU1BOQ2xhYTJKNnd1eGU4dHNFL3o0TjZ1YjFQS1paVkt2ZVpvSjd5S2lvVwo="
     }
   }
 }

@@ -454,10 +454,14 @@ function AboutSection() {
   const handleRestartNow = async () => {
     if (!updateInfo?.download_url) return;
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
+      const { invoke, Channel } = await import('@tauri-apps/api/core');
+      const onProgress = new Channel<number>();
+      onProgress.onmessage = (progress) => {
+        console.log('[AboutSection] 下载进度:', progress);
+      };
       await invoke('download_and_install_update', {
         dmgUrl: updateInfo.download_url,
-        onProgress: new Promise((resolve) => resolve(undefined)),
+        onProgress,
       });
     } catch (e) {
       console.error('[AboutSection] 安装失败:', e);

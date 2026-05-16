@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, Channel } from '@tauri-apps/api/core'
 
 /** 在外部浏览器打开URL（优先用Tauri shell命令，降级window.open） */
 async function openInBrowser(url: string) {
@@ -104,13 +104,15 @@ export default function UpdateNotifier() {
     setProgress(0)
 
     try {
+      // 创建 Channel 接收进度回调
+      const onProgress = new Channel<number>()
+      onProgress.onmessage = (progress) => {
+        setProgress(progress)
+      }
+
       await invoke('download_and_install_update', {
         dmgUrl: updateInfo.download_url,
-        onProgress: new Promise((resolve) => {
-          // Tauri Channel 回调 — Rust端会通过channel发送0-100的进度值
-          // 这里用invoke的返回方式处理
-          resolve(undefined)
-        }),
+        onProgress,
       })
     } catch (e) {
       console.error('[UpdateNotifier] install failed:', e)
