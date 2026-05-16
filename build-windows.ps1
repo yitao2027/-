@@ -1,7 +1,16 @@
-# 勺子Claw Windows打包脚本
-# 用法：右键"使用PowerShell运行"，或在PowerShell中执行 .\build-windows.ps1
+# 勺子Claw Windows打包脚本 v5.5.32
+# 用法：在项目根目录打开 PowerShell，执行 .\build-windows.ps1
 
-Write-Host "===== 勺子Claw Windows打包脚本 =====" -ForegroundColor Green
+Write-Host "===== 勺子Claw Windows打包脚本 v5.5.32 =====" -ForegroundColor Green
+Write-Host ""
+
+# 切换到 frontend 目录
+$frontendDir = Join-Path $PSScriptRoot "frontend"
+if (!(Test-Path $frontendDir)) {
+    Write-Host "❌ 找不到 frontend 目录" -ForegroundColor Red
+    exit 1
+}
+Set-Location $frontendDir
 
 # 检查Node.js
 if (!(Get-Command node -ErrorAction SilentlyContinue)) {
@@ -26,7 +35,7 @@ $rustVersion = cargo --version
 Write-Host "✅ Rust版本：$rustVersion" -ForegroundColor Green
 
 # 安装前端依赖
-Write-Host "" 
+Write-Host ""
 Write-Host "📦 安装前端依赖（约2分钟）..." -ForegroundColor Yellow
 npm install
 if ($LASTEXITCODE -ne 0) {
@@ -37,7 +46,7 @@ if ($LASTEXITCODE -ne 0) {
 # 打包Windows版
 Write-Host ""
 Write-Host "🔨 开始打包Windows版（约5-10分钟）..." -ForegroundColor Yellow
-npm run tauri build
+npx tauri build
 if ($LASTEXITCODE -ne 0) {
     Write-Host "❌ 打包失败" -ForegroundColor Red
     exit 1
@@ -45,10 +54,12 @@ if ($LASTEXITCODE -ne 0) {
 
 Write-Host ""
 Write-Host "🎉 打包完成！" -ForegroundColor Green
-Write-Host "安装包位置：src-tauri\target\release\bundle\nsis\" -ForegroundColor Cyan
+Write-Host "安装包位置：" -ForegroundColor Cyan
+Write-Host "  MSI:  src-tauri\target\release\bundle\msi\" -ForegroundColor Cyan
+Write-Host "  NSIS: src-tauri\target\release\bundle\nsis\" -ForegroundColor Cyan
 
 # 自动打开目录
-$bundlePath = Join-Path $PSScriptRoot "src-tauri\target\release\bundle\nsis"
+$bundlePath = Join-Path $frontendDir "src-tauri\target\release\bundle\nsis"
 if (Test-Path $bundlePath) {
     Start-Process explorer.exe $bundlePath
 }
