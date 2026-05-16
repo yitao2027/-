@@ -85,6 +85,7 @@ pub async fn upload_image_to_oss(b64_data: &str) -> Result<String, String> {
 
 /// 上传 base64 图片到 OSS 并返回预签名 URL（供第三方 API 拉图）
 /// B099 (v5.5.25): bucket 保持私有，通过签名 URL 授权临时访问
+/// v5.5.31 修复: validate 改为非阻塞（只记日志），避免 validate 失败阻断主流程
 pub async fn upload_and_get_signed_url(b64_data: &str) -> Result<String, String> {
     // 1. 先上传
     let public_url = upload_image_to_oss(b64_data).await?;
@@ -96,13 +97,18 @@ pub async fn upload_and_get_signed_url(b64_data: &str) -> Result<String, String>
 
     // 3. 生成预签名 URL
     let signed_url = generate_signed_url(object_key, SIGNED_URL_EXPIRES_SECS)?;
-    log::info!("[OSS] ✅ 预签名URL已生成(有效{}秒): {}...{}", 
-        SIGNED_URL_EXPIRES_SECS,
-        &signed_url[..80.min(signed_url.len())],
-        &signed_url[signed_url.len().saturating_sub(20)..]);
+    log::info!("[OSS] ✅ 预签名URL已生成(有效{}秒,长度{})", 
+        SIGNED_URL_EXPIRES_SECS, signed_url.len());
 
-    // 4. HEAD 验证：站在第三方视角确认可访问
-    validate_url_accessible(&signed_url).await?;
+    // 4. 非阻塞验证：异步检查可访问性，不影响主流程返回
+    // (v5.5.31: 改为非阻塞，validate失败只记日志，不再block上传结果)
+    let url_clone = signed_url.clone();
+    tokio::spawn(async move {
+        match validate_url_accessible(&url_clone).await {
+            Ok(_) => log::info!("[OSS] ✅ 预签名URL可访问验证通过"),
+            Err(e) => log::warn!("[OSS] ⚠️ 预签名URL验证失败(不影响主流程): {}", e),
+        }
+    });
 
     Ok(signed_url)
 }
