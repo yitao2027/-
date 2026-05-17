@@ -1,14 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
+import { invoke } from '@tauri-apps/api/core';
 import { sendSmsCode, loginWithCode, setJwtToken } from '../services/pointsApi';
-import { VALID_INVITE_CODES, INVITE_CODE_PATTERN } from '../data/INVITE_CODES';
+// 🔒 v5.5.34 B100修复：邀请码不再在前端存储，改为调用后端 Tauri command 验证
+// import { VALID_INVITE_CODES, INVITE_CODE_PATTERN } from '../data/INVITE_CODES'; // ← 已废弃，勿恢复！
+
+// 仅保留格式预检（字符集+长度），真正的有效性验证由后端完成
+const INVITE_CODE_PATTERN = /^[23456789A-HJ-NP-Z]{11}$/;
 
 interface LoginScreenProps {
   onLogin: () => void;
 }
-
-// 🔑 有效邀请码集合（v5.5.20：500 个 11 位带校验码，从 INVITE_CODES.ts 加载）
-const VALID_CODE_SET = new Set<string>(VALID_INVITE_CODES);
 
 export default function LoginScreen({ onLogin }: LoginScreenProps) {
   const [email, setEmail] = useState('');
@@ -18,7 +20,8 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [agreed, setAgreed] = useState(false);
-  const [codeStatus, setCodeStatus] = useState<'idle'|'valid'|'invalid'>('idle');
+  // 🔒 v5.5.34: codeStatus 含新状态 'checking'（后端验证中）
+  const [codeStatus, setCodeStatus] = useState<'idle'|'valid'|'invalid'|'checking'>('idle');
   const [appVersion, setAppVersion] = useState('');
   const [loginMode, setLoginMode] = useState<'invite' | 'phone'>('invite');
 
@@ -29,12 +32,14 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
   const [phoneLoading, setPhoneLoading] = useState(false);
   const [debugCode, setDebugCode] = useState('');
   const countdownRef = useRef<any>(null);
+  // 防抖 timer ref（避免每次按键都调后端）
+  const verifyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     getVersion().then(v => setAppVersion(v)).catch(() => {});
   }, []);
 
-  // 启动时检查是否已绑定过邀请码
+  // 启动时检查是否已绑定过邀请码（已使用过的码不再重新验证）
   useEffect(() => {
     const redeemed = localStorage.getItem('shaoziclaw_invite_verified');
     if (redeemed === 'true') {
@@ -43,18 +48,34 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     }
   }, []);
 
-  // 实时校验邀请码（前端即时反馈，11 位带校验码）
+  // 🔒 v5.5.34 B100修复：实时校验邀请码
+  // 前端只做格式预检（字符集+长度），真正的有效性+使用状态由后端验证
   useEffect(() => {
+    if (verifyTimerRef.current) clearTimeout(verifyTimerRef.current);
+
     if (!inviteCode || inviteCode.trim().length < 11) {
       setCodeStatus('idle');
       return;
     }
     const upper = inviteCode.trim().toUpperCase();
-    if (INVITE_CODE_PATTERN.test(upper) && VALID_CODE_SET.has(upper)) {
-      setCodeStatus('valid');
-    } else {
+
+    // 格式预检（字符集不对直接标 invalid，不调后端）
+    if (!INVITE_CODE_PATTERN.test(upper)) {
       setCodeStatus('invalid');
+      return;
     }
+
+    // 格式通过 → 防抖 500ms 后调后端验证
+    setCodeStatus('checking');
+    verifyTimerRef.current = setTimeout(async () => {
+      try {
+        const result = await invoke<{ valid: boolean; message: string }>('verify_invite_code_cmd', { code: upper });
+        setCodeStatus(result.valid ? 'valid' : 'invalid');
+      } catch {
+        // 后端调用失败时降级为格式通过（不阻塞用户，注册时再做最终验证）
+        setCodeStatus('valid');
+      }
+    }, 500);
   }, [inviteCode]);
 
   // 清理倒计时
@@ -109,7 +130,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     }
   };
 
-  // 邀请码登录
+  // 🔒 v5.5.34 B100修复：邀请码登录（后端验证+一码一用）
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -120,10 +141,11 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     if (!inviteCode || inviteCode.trim().length !== 11) { setError('请输入 11 位邀请码（必填）'); return; }
     if (!agreed) { setError('请先阅读并同意用户协议'); return; }
     
-    // 校验邀请码
     const code = inviteCode.trim().toUpperCase();
-    if (!INVITE_CODE_PATTERN.test(code) || !VALID_CODE_SET.has(code)) {
-      setError('邀请码无效，请联系发放人获取正确邀请码');
+    
+    // 格式预检（前端快速反馈）
+    if (!INVITE_CODE_PATTERN.test(code)) {
+      setError('邀请码格式不正确（11位字符，不含0/O/1/I/l）');
       return;
     }
 
@@ -131,30 +153,47 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
     setError('');
     
     try {
-      // 调用后端登录（含邀请码）
-      const { invoke } = await import('@tauri-apps/api/core');
-      
+      // 🔒 Step 1: 先验证邀请码（后端检查有效性+使用状态）
+      const verifyResult = await invoke<{ valid: boolean; message: string }>('verify_invite_code_cmd', { code });
+      if (!verifyResult.valid) {
+        setLoading(false);
+        setError(verifyResult.message);
+        return;
+      }
+
+      // Step 2: 尝试登录
       try {
         await invoke('login', { email, password });
       } catch {
-        // 后端没有用户则自动注册
+        // 后端没有用户则自动注册（注册时会调用 redeem_invite_code 标记已使用）
         try {
-          await invoke('register', { email, password, name: email.split('@')[0] });
-        } catch (regErr) {
-          // 可能已注册，忽略继续
-          console.warn('[LoginScreen] 注册结果:', regErr);
+          const registerResult = await invoke<{ success: boolean; message: string }>('register', { 
+            email, 
+            password, 
+            name: email.split('@')[0],
+            invite_code: code  // 🔒 传递邀请码给后端，注册时标记已使用
+          });
+          if (!registerResult.success) {
+            setLoading(false);
+            setError(registerResult.message);
+            return;
+          }
+        } catch (regErr: any) {
+          setLoading(false);
+          setError(`注册失败: ${regErr}`);
+          return;
         }
       }
 
-      // ✅ 邀请码验证通过 → 存储绑定状态
+      // ✅ 登录/注册成功 → 存储绑定状态（前端缓存，避免重复验证）
       localStorage.setItem('shaoziclaw_invite_verified', 'true');
       localStorage.setItem('shaoziclaw_invite_code', code);
       
       setLoading(false);
       onLogin();
-    } catch (err) {
+    } catch (err: any) {
       setLoading(false);
-      setError(`登录失败: ${err}`);
+      setError(`登录失败: ${err.message || err}`);
     }
   };
 
@@ -345,11 +384,13 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
                   🔑 邀请码 <span className="text-red-400">*</span> <span className="text-gray-600 font-normal">（必填）</span>
                 </label>
                 <div className="relative">
-                  <div className={`absolute left-3 top-1/2 -translate-y-1/2 ${codeStatus === 'valid' ? 'text-green-400' : codeStatus === 'invalid' ? 'text-red-400' : 'text-gray-500'}`}>
+                  <div className={`absolute left-3 top-1/2 -translate-y-1/2 ${codeStatus === 'valid' ? 'text-green-400' : codeStatus === 'invalid' ? 'text-red-400' : codeStatus === 'checking' ? 'text-yellow-400' : 'text-gray-500'}`}>
                     {codeStatus === 'valid' ? (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
                     ) : codeStatus === 'invalid' ? (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                    ) : codeStatus === 'checking' ? (
+                      <svg className="animate-spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
                     ) : (
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
@@ -367,6 +408,8 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
                         ? 'border-green-500/50 bg-green-500/[0.04] text-green-300'
                         : codeStatus === 'invalid'
                         ? 'border-red-500/50 bg-red-500/[0.04]'
+                        : codeStatus === 'checking'
+                        ? 'border-yellow-500/30 text-white'
                         : 'border-white/[0.08] text-white focus:border-[#57CC]/40 focus:bg-white/[0.06]'
                     }`}
                     autoComplete="off"
@@ -378,8 +421,11 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
                     邀请码有效
                   </p>
                 )}
+                {codeStatus === 'checking' && (
+                  <p className="text-[11px] text-yellow-400/70 mt-1 ml-1">验证中...</p>
+                )}
                 {inviteCode && inviteCode.length >= 11 && codeStatus === 'invalid' && (
-                  <p className="text-[11px] text-red-400 mt-1 ml-1">邀请码无效，请联系发放人获取正确邀请码</p>
+                  <p className="text-[11px] text-red-400 mt-1 ml-1">邀请码无效或已被使用，请联系发放人获取正确邀请码</p>
                 )}
                 {(!inviteCode || inviteCode.length < 11) && (
                   <p className="text-[11px] text-gray-600 mt-1 ml-1">
@@ -412,7 +458,7 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
               {/* 登录按钮 */}
               <button
                 type="submit"
-                disabled={loading || !agreed || codeStatus === 'invalid' || !inviteCode.trim()}
+                disabled={loading || !agreed || codeStatus === 'invalid' || codeStatus === 'checking' || !inviteCode.trim()}
                 className="w-full py-3 rounded-xl font-semibold text-sm text-black transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed hover:shadow-lg active:scale-[0.98]"
                 style={{
                   background: loading || codeStatus !== 'valid' ? '#555' : 'linear-gradient(135deg, #57CC86 0%, #3DAA5F 100%)',

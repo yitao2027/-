@@ -1,14 +1,12 @@
-// 认证模块 - 用户注册/登录 + 邀请码验证（v4.6 邀请制）
+// 认证模块 - 用户注册/登录 + 邀请码验证（v5.5.x B100修复）
+// 
+// 🔒 B100修复：邀请码由前端迁移至后端 invite_store 模块
+//    - 前端不再持有邀请码列表
+//    - 后端验证 + 一码一用追踪
 
 use crate::{AuthResponse, UserInfo, SubscriptionInfo};
 use crate::user_store;
-
-// 🔑 MVP本地模式有效邀请码（后续对接后端API后移除此列表）
-// 与前端 LoginScreen.tsx 的 VALID_INVITE_CODES 同步
-const VALID_INVITE_CODES: &[&str] = &[
-    "SHAOZICLAW2026",
-    // SCL- 开头的码全部放行（宋宣按需添加具体码）
-];
+use crate::invite_store;
 
 fn simple_id(s: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
@@ -22,29 +20,39 @@ fn simple_id(s: &str) -> String {
     format!("{:x}{:x}", h.finish(), now)
 }
 
-/// 验证邀请码是否有效（MVP本地模式）
-pub fn verify_invite_code(code: &str) -> Result<bool, String> {
-    let code_upper = code.trim().to_ascii_uppercase();
-    
-    if code_upper.is_empty() {
-        return Err("邀请码不能为空".to_string());
+/// 🔑 验证邀请码（调用后端 invite_store）
+/// 返回 JSON 友好的结果
+pub fn verify_invite_code(code: &str) -> invite_store::VerifyResult {
+    match invite_store::verify_invite_code(code) {
+        Ok(result) => result,
+        Err(e) => invite_store::VerifyResult {
+            valid: false,
+            message: format!("验证失败: {}", e),
+        },
     }
-    
-    if code_upper.len() < 4 {
-        return Err("邀请码格式不正确".to_string());
+}
+
+/// 🔐 兑换邀请码（注册时标记已使用）
+pub fn redeem_invite_code(code: &str, email: &str) -> invite_store::RedeemResult {
+    match invite_store::redeem_invite_code(code, email) {
+        Ok(result) => result,
+        Err(e) => invite_store::RedeemResult {
+            success: false,
+            message: format!("兑换失败: {}", e),
+        },
     }
-    
-    // 精确匹配
-    if VALID_INVITE_CODES.iter().any(|c| *c == code_upper) {
-        return Ok(true);
+}
+
+/// 获取邀请码统计
+pub fn get_invite_code_stats() -> invite_store::CodeStats {
+    match invite_store::get_code_stats() {
+        Ok(stats) => stats,
+        Err(_) => invite_store::CodeStats {
+            total: 0,
+            used: 0,
+            remaining: 0,
+        },
     }
-    
-    // SCL- 通配
-    if code_upper.starts_with("SCL-") {
-        return Ok(true);
-    }
-    
-    Ok(false)
 }
 
 pub async fn login(email: &str, password: &str) -> Result<AuthResponse, String> {
@@ -106,6 +114,31 @@ pub async fn register(request: &crate::RegisterRequest) -> Result<AuthResponse, 
             subscription: None,
             token: None,
             message: "该邮箱已注册".to_string(),
+        });
+    }
+    
+    // 🔒 B100修复：注册时强制验证邀请码（一码一用）
+    let invite_code = request.invite_code.as_deref().unwrap_or("");
+    if invite_code.is_empty() {
+        return Ok(AuthResponse {
+            success: false,
+            user: None,
+            subscription: None,
+            token: None,
+            message: "邀请码不能为空".to_string(),
+        });
+    }
+    
+    let redeem_result = invite_store::redeem_invite_code(invite_code, &request.email)
+        .map_err(|e| format!("邀请码验证失败: {}", e))?;
+    
+    if !redeem_result.success {
+        return Ok(AuthResponse {
+            success: false,
+            user: None,
+            subscription: None,
+            token: None,
+            message: redeem_result.message,
         });
     }
     

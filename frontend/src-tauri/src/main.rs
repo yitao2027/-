@@ -3,6 +3,7 @@
 
 mod ai_engine;
 mod auth;
+mod invite_store; // 🔒 v5.5.34 B100修复：邀请码后端存储（一码一用，前端不暴露）
 mod skill_manager;
 mod subscription;
 mod tools;
@@ -383,6 +384,18 @@ async fn login(
 #[tauri::command]
 async fn register(request: RegisterRequest) -> Result<AuthResponse, String> {
     auth::register(&request).await
+}
+
+// 🔒 v5.5.34 B100修复：邀请码验证（前端调用，后端验证）
+#[tauri::command]
+fn verify_invite_code_cmd(code: String) -> invite_store::VerifyResult {
+    auth::verify_invite_code(&code)
+}
+
+// 🔒 v5.5.34 B100修复：邀请码兑换（注册时标记已使用）
+#[tauri::command]
+fn redeem_invite_code_cmd(code: String, email: String) -> invite_store::RedeemResult {
+    auth::redeem_invite_code(&code, &email)
 }
 
 #[tauri::command]
@@ -1592,6 +1605,9 @@ fn main() {
             login,
             register,
             logout,
+            // 🔒 v5.5.34 B100修复：邀请码验证 commands
+            verify_invite_code_cmd,
+            redeem_invite_code_cmd,
             get_app_state,
             get_skills_list,
             get_skill_detail,
