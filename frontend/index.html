@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/claw-icon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CAN Claw - 餐饮AI专家助手</title>
+  </head>
+  <body class="bg-white text-gray-900 antialiased" style="background: #fff; margin:0; padding:0;">
+    <div id="root" style="background: #fff; min-height: 100vh;">
+      <div id="loading-fallback" style="display:flex;align-items:center;justify-content:center;min-height:100vh;color:#FFD600;font-size:24px;font-family:sans-serif;background:#fff;">
+        🦞 CAN Claw 加载中...
+      </div>
+    </div>
+    <script>
+      // 调试：确认JS开始执行
+      console.log('[ShaoziClaw] HTML loaded, JS starting...')
+      window.__SHAOZICLAW_START = Date.now()
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

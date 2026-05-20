@@ -1,0 +1,100 @@
+# ===== Build Artifacts =====
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/src-tauri/target/
+
+# ===== Temp build tools =====
+tmp-icon/
+build-*.log
+scripts/gen-icon.cjs
+
+# ===== Archives & Installers =====
+*.dmg
+*.zip
+*.app
+*.exe
+*.msi
+*.deb
+*.AppImage
+
+# ===== macOS =====
+.DS_Store
+Thumbs.db
+._*
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== Signing Keys (NEVER commit secrets) =====
+*.key
+*.csr
+*.pem
+*.p12
+*.pfx
+shaoziclaw_signing.key
+shaoziclaw_signing_2026.key
+shaoziclaw.csr
+shaoziclaw_2026.csr
+
+# ===== Windows build artifacts =====
+ShaoziClaw-Windows-*/
+
+# ===== Knowledge base index (large binary) =====
+knowledge-base-index/
+
+# ===== Tauri =====
+frontend/src-tauri/gen/
+
+# ===== Website (separate repo) =====
+website/
+
+# ===== Environment =====
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+.secret
+secrets/
+
+# ===== Tauri signing / installer =====
+*.pfx
+*.cer
+*.p12
+
+# ===== Test / Coverage =====
+coverage/
+.nyc_output/
+*.lcov
+
+# ===== Cache =====
+.cache/
+.parcel-cache/
+.turbo/
+
+# ===== User-specific runtime data =====
+*.db-shm
+*.db-wal
+
+# ===== Mac 残留（待清理后可删此行）=====
+# Users/
+
+# ===== WorkBuddy 工作区元数据 =====
+.workbuddy/memory/
+
+# ===== KB 索引构建工具产物（不提交：本地缓存/日志/PID） =====
+tools/.kb_cache/
+tools/__pycache__/
+tools/.kb_build_pid
+tools/build_kb.out.log
+tools/build_kb.err.log
+tools/*.log
+
+# ===== KB 索引大文件（随安装包发布，不进 git 历史） =====
+frontend/src-tauri/resources/knowledge-base/kb_vectors.lance.tar.gz
+frontend/src-tauri/resources/knowledge-base/kb_vectors.lance/

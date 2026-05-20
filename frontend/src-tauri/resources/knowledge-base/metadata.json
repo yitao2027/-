@@ -1,0 +1,13 @@
+{
+  "version": "1.1.0",
+  "build_time": "2026-05-14T21:03:05",
+  "total_chunks": 59892,
+  "total_files": 479,
+  "embedding_model": "BAAI/bge-m3",
+  "vector_dim": 1024,
+  "chunk_size": 800,
+  "chunk_overlap": 100,
+  "sanitized": true,
+  "sanitize_level": "medium",
+  "source_label": "勺子Claw整合的餐饮行业经验"
+}

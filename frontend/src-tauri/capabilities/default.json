@@ -1,0 +1,27 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "enables the default permissions for v5.3.9 龙虾级本地权限",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    "fs:write-all",
+    "fs:read-all",
+    "fs:allow-app-write",
+    "fs:allow-app-read",
+    "fs:allow-document-write",
+    "fs:allow-document-read",
+    "fs:allow-download-write",
+    "fs:allow-download-read",
+    "fs:allow-home-write",
+    "fs:allow-home-read",
+    "fs:allow-desktop-write",
+    "fs:allow-desktop-read",
+    "shell:allow-open",
+    "log:default"
+  ]
+}

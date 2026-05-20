@@ -1,0 +1,176 @@
+//! 阿里云 OSS 上传模块
+//! B095: 图生图结果上传到 OSS，返回公网 URL
+//! B099 (v5.5.25): 参考图改用预签名 URL，bucket 保持私有
+//! 签名算法: OSS V1 (HMAC-SHA1)
+//! 路径规则: image-gen/YYYY-MM-DD/{uuid}.png
+
+use base64::Engine;
+use chrono::Utc;
+use hmac::{Hmac, Mac};
+use sha1::Sha1;
+use uuid::Uuid;
+
+type HmacSha1 = Hmac<Sha1>;
+
+/// 默认预签名 URL 有效期：1 小时（足够墨行 API 拉图）
+const SIGNED_URL_EXPIRES_SECS: i64 = 3600;
+
+// OSS 配置常量
+const OSS_ENDPOINT: &str = "oss-cn-beijing.aliyuncs.com";
+const OSS_BUCKET: &str = "shaoziclaw2026";
+const OSS_ACCESS_KEY_ID: &str = "REDACTED_OSS_AK";
+const OSS_ACCESS_KEY_SECRET: &str = "REDACTED_OSS_SK";
+
+/// 上传 base64 图片到 OSS，返回公网访问 URL
+/// 路径: image-gen/YYYY-MM-DD/{uuid}.png
+pub async fn upload_image_to_oss(b64_data: &str) -> Result<String, String> {
+    // 1. 解码 base64
+    let image_bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64_data)
+        .map_err(|e| format!("base64解码失败: {}", e))?;
+
+    // 2. 生成对象路径
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let file_id = Uuid::new_v4().to_string();
+    let object_key = format!("image-gen/{}/{}.png", today, file_id);
+
+    // 3. 构造签名
+    let date = Utc::now().format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+    let content_type = "image/png";
+    let string_to_sign = format!(
+        "PUT\n\n{}\n{}\n/{}/{}",
+        content_type, date, OSS_BUCKET, object_key
+    );
+
+    let mut mac = HmacSha1::new_from_slice(OSS_ACCESS_KEY_SECRET.as_bytes())
+        .map_err(|e| format!("HMAC初始化失败: {}", e))?;
+    mac.update(string_to_sign.as_bytes());
+    let signature = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+
+    // 4. PUT Object
+    let put_url = format!(
+        "https://{}.{}/{}",
+        OSS_BUCKET, OSS_ENDPOINT, object_key
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("HTTP客户端创建失败: {}", e))?;
+
+    let resp = client.put(&put_url)
+        .header("Authorization", format!("OSS {}:{}", OSS_ACCESS_KEY_ID, signature))
+        .header("Content-Type", content_type)
+        .header("Date", &date)
+        .body(image_bytes)
+        .send()
+        .await
+        .map_err(|e| format!("OSS上传请求失败: {}", e))?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let err_body = resp.text().await.unwrap_or_default();
+        log::error!("[OSS] 上传失败 HTTP {}: {}", status, &err_body[..err_body.len().min(300)]);
+        return Err(format!("OSS上传失败 HTTP {}: {}", status, &err_body[..200.min(err_body.len())]));
+    }
+
+    // 5. 返回公网 URL（注意：bucket 私有时此 URL 不可直接访问）
+    let public_url = format!(
+        "https://{}.{}/{}",
+        OSS_BUCKET, OSS_ENDPOINT, object_key
+    );
+    log::info!("[OSS] ✅ 上传成功: {}", public_url);
+    Ok(public_url)
+}
+
+/// 上传 base64 图片到 OSS 并返回预签名 URL（供第三方 API 拉图）
+/// B099 (v5.5.25): bucket 保持私有，通过签名 URL 授权临时访问
+/// v5.5.31 修复: validate 改为非阻塞（只记日志），避免 validate 失败阻断主流程
+pub async fn upload_and_get_signed_url(b64_data: &str) -> Result<String, String> {
+    // 1. 先上传
+    let public_url = upload_image_to_oss(b64_data).await?;
+
+    // 2. 从 public_url 提取 object_key
+    let prefix = format!("https://{}.{}/", OSS_BUCKET, OSS_ENDPOINT);
+    let object_key = public_url.strip_prefix(&prefix)
+        .ok_or_else(|| "无法从URL提取object_key".to_string())?;
+
+    // 3. 生成预签名 URL
+    let signed_url = generate_signed_url(object_key, SIGNED_URL_EXPIRES_SECS)?;
+    log::info!("[OSS] ✅ 预签名URL已生成(有效{}秒,长度{})", 
+        SIGNED_URL_EXPIRES_SECS, signed_url.len());
+
+    // 4. 非阻塞验证：异步检查可访问性，不影响主流程返回
+    // (v5.5.31: 改为非阻塞，validate失败只记日志，不再block上传结果)
+    let url_clone = signed_url.clone();
+    tokio::spawn(async move {
+        match validate_url_accessible(&url_clone).await {
+            Ok(_) => log::info!("[OSS] ✅ 预签名URL可访问验证通过"),
+            Err(e) => log::warn!("[OSS] ⚠️ 预签名URL验证失败(不影响主流程): {}", e),
+        }
+    });
+
+    Ok(signed_url)
+}
+
+/// 生成 OSS V1 预签名 GET URL
+/// 签名格式: Signature = base64(hmac-sha1(AccessKeySecret, StringToSign))
+/// StringToSign = "GET\n\n\n{Expires}\n/{Bucket}/{ObjectKey}"
+/// URL = https://{Bucket}.{Endpoint}/{ObjectKey}?OSSAccessKeyId=...&Expires=...&Signature=...
+fn generate_signed_url(object_key: &str, expires_secs: i64) -> Result<String, String> {
+    let expires = Utc::now().timestamp() + expires_secs;
+
+    let string_to_sign = format!(
+        "GET\n\n\n{}\n/{}/{}",
+        expires, OSS_BUCKET, object_key
+    );
+
+    let mut mac = HmacSha1::new_from_slice(OSS_ACCESS_KEY_SECRET.as_bytes())
+        .map_err(|e| format!("HMAC初始化失败: {}", e))?;
+    mac.update(string_to_sign.as_bytes());
+    let signature = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+
+    // URL encode signature（base64 含 +/= 需编码）
+    let encoded_sig = urlencoding::encode(&signature);
+
+    let signed_url = format!(
+        "https://{}.{}/{}?OSSAccessKeyId={}&Expires={}&Signature={}",
+        OSS_BUCKET, OSS_ENDPOINT, object_key, OSS_ACCESS_KEY_ID, expires, encoded_sig
+    );
+
+    Ok(signed_url)
+}
+
+/// GET 验证：模拟第三方视角确认 URL 可访问
+/// B099: 防止"静默吞 403"反模式——上传后立即验证，fail-fast
+/// v5.5.26 修复：OSS V1 预签名 URL 的 HTTP Method 参与签名，
+/// 必须用 GET 而非 HEAD（HEAD 与 GET 签名不互通，会返回 403 SignatureDoesNotMatch）
+/// 用 Range: bytes=0-0 只取 1 字节，期望 206 Partial Content
+async fn validate_url_accessible(url: &str) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP客户端创建失败: {}", e))?;
+
+    let resp = client.get(url)
+        .header("Range", "bytes=0-0")
+        .send()
+        .await
+        .map_err(|e| format!("[VALIDATE][RefImage] GET请求失败: {}", e))?;
+
+    let status = resp.status();
+    // 200 OK / 206 Partial Content 均视为成功
+    if status.is_success() {
+        log::info!("[VALIDATE][RefImage] ✅ 预签名URL可访问 (HTTP {})", status);
+        Ok(())
+    } else {
+        let body_preview = resp.text().await.unwrap_or_default();
+        let msg = format!(
+            "[VALIDATE][RefImage] ❌ 预签名URL不可访问 HTTP {} — 墨行将无法拉到参考图. body={}",
+            status,
+            &body_preview[..body_preview.len().min(200)]
+        );
+        log::error!("{}", msg);
+        Err(msg)
+    }
+}
