@@ -139,6 +139,21 @@ export default function UpdateNotifier() {
   // 🔧 同步dismissed状态到ref（让checkForUpdate能读到最新值）
   useEffect(() => { dismissedRef.current = dismissed }, [dismissed])
 
+  // 🔧 Bug55修复: 监听Settings页"稍后提醒"的CustomEvent
+  useEffect(() => {
+    const handleExternalUpdate = (e: CustomEvent<UpdateInfo>) => {
+      if (e.detail && e.detail.available) {
+        hasUpdateRef.current = true
+        setDismissed(false)
+        setUpdateInfo(e.detail)
+      }
+    }
+    window.addEventListener('shaoziclaw-update-available', handleExternalUpdate as EventListener)
+    return () => {
+      window.removeEventListener('shaoziclaw-update-available', handleExternalUpdate as EventListener)
+    }
+  }, [])
+
   // ═════ 渲染 ═════
 
   // 🔴 检查全部失败 → 显示手动重试条

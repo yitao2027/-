@@ -32,7 +32,7 @@ export default function HomeScreen() {
     { label: '品牌Slogan', value: '超级AI大脑', sub: '餐饮人的AI伙伴' },
     { label: '知识库资料', value: '931', sub: '份行业资料' },
     { label: '自定义模型', value: String(customModels.length), sub: '个已接入' },
-    { label: '集成状态', value: [wechatConfig.enabled, feishuConfig.enabled].filter(Boolean).length + '/2', sub: '已连接' },
+    { label: '快捷入口', value: '3', sub: '个常用入口' },
   ];
 
   return (
@@ -107,42 +107,6 @@ export default function HomeScreen() {
               )}
             </button>
 
-            {/* 微信集成 */}
-            <button
-              onClick={() => setActiveTab('settings')}
-              className="p-4 rounded-xl text-left transition-all group"
-              style={{ background: COLORS.bg.card, border: `1px solid ${COLORS.border.default}` }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.bg.cardHover; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = COLORS.bg.card; }}
-            >
-              <div className="w-9 h-9 rounded-lg mb-3 flex items-center justify-center text-base"
-                   style={{ background: 'rgba(255,255,255,0.06)' }}>💬</div>
-              <h3 className="text-sm font-medium mb-0.5" style={{ color: COLORS.text.primary }}>微信通知</h3>
-              <p className="text-[11px]" style={{ color: COLORS.text.muted }}>{wechatConfig.enabled ? '已连接' : '扫码绑定'}</p>
-              {wechatConfig.enabled && (
-                <span className="inline-block mt-2 px-1.5 py-0.5 rounded text-[10px]"
-                      style={{ background: 'rgba(87,204,134,0.08)', color: COLORS.text.brand }}>✓ 已启用</span>
-              )}
-            </button>
-
-            {/* 飞书集成 */}
-            <button
-              onClick={() => setActiveTab('settings')}
-              className="p-4 rounded-xl text-left transition-all group"
-              style={{ background: COLORS.bg.card, border: `1px solid ${COLORS.border.default}` }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.bg.cardHover; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = COLORS.bg.card; }}
-            >
-              <div className="w-9 h-9 rounded-lg mb-3 flex items-center justify-center text-base"
-                   style={{ background: 'rgba(255,255,255,0.06)' }}>🚀</div>
-              <h3 className="text-sm font-medium mb-0.5" style={{ color: COLORS.text.primary }}>飞书通知</h3>
-              <p className="text-[11px]" style={{ color: COLORS.text.muted }}>{feishuConfig.enabled ? '已连接' : '配置Webhook'}</p>
-              {feishuConfig.enabled && (
-                <span className="inline-block mt-2 px-1.5 py-0.5 rounded text-[10px]"
-                      style={{ background: 'rgba(87,204,134,0.08)', color: COLORS.text.brand }}>✓ 已启用</span>
-              )}
-            </button>
-
             {/* 专家中心 */}
             <button
               onClick={() => setActiveTab('experts')}
@@ -200,7 +164,7 @@ export default function HomeScreen() {
             <p className="text-xs font-medium mb-0.5" style={{ color: 'rgba(87,204,134,0.80)' }}>内测版使用提示</p>
             <p className="text-[11px] leading-relaxed" style={{ color: COLORS.text.muted }}>
 当前为勺子Claw v{appVersion || '...'}内测版本。邀请码由宋宣私下发放，如需申请请发送邮件至 songxuan@shaoziclaw.com。
-              建议先配置自定义大模型和微信/飞书通知以获得最佳体验。
+              建议先配置自定义大模型以获得最佳体验。
             </p>
           </div>
         </div>

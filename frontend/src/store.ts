@@ -474,6 +474,13 @@ const saveTasks = (tasks: Task[]) => {
   }
 };
 
+// 🔧 Bug4修复: debounced保存 — 3秒延迟避免频繁写入
+let taskSaveTimer: ReturnType<typeof setTimeout> | null = null;
+const debouncedSaveTasks = (tasks: Task[]) => {
+  clearTimeout(taskSaveTimer);
+  taskSaveTimer = setTimeout(() => saveTasks(tasks), 3000);
+};
+
 const loadTaskSessions = (): TaskSession[] => {
   try {
     const saved = localStorage.getItem('shaoziclaw_task_sessions');
@@ -685,6 +692,13 @@ export const useStore = create<UserState>((set, get) => ({
 
   // ========== 任务系统 Actions ==========
   createTask: (title) => {
+    // 🔧 Bug4修复: 同名任务合并 — 如果已有同名任务，直接切换到它
+    const existing = get().tasks.find(t => t.title === title);
+    if (existing) {
+      set({ activeTaskId: existing.id, messages: existing.messages });
+      localStorage.setItem('shaoziclaw_active_task_id', existing.id);
+      return existing.id;
+    }
     const taskId = `task_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
     const newTask: Task = {
       id: taskId,
@@ -790,9 +804,10 @@ export const useStore = create<UserState>((set, get) => ({
     });
     // 🔧 v5.5.1: 持久化主聊天消息 + tasks
     // 🔧 B088: 使用trySetItem自动处理配额溢出
+    // 🔧 Bug4修复: 使用debounced保存避免频繁写入
     const json = JSON.stringify(get().messages);
     trySetItem('shaoziclaw_chat_messages', json);
-    saveTasks(get().tasks);
+    debouncedSaveTasks(get().tasks);
   },
   updateMessageInActive: (id, updates) => {
     set((state) => {
@@ -804,9 +819,10 @@ export const useStore = create<UserState>((set, get) => ({
     });
     // 🔧 v5.5.1: 持久化主聊天消息
     // 🔧 B088: 使用trySetItem自动处理配额溢出
+    // 🔧 Bug4修复: 使用debounced保存避免频繁写入
     const json = JSON.stringify(get().messages);
     trySetItem('shaoziclaw_chat_messages', json);
-    saveTasks(get().tasks);
+    debouncedSaveTasks(get().tasks);
   },
   clearActiveMessages: () => {
     set((state) => {
