@@ -13,10 +13,6 @@ import {
   Loader2,
   Cpu,
   ChevronDown,
-  ChevronUp,
-  Lightbulb,
-  BookOpen,
-  Calculator,
   Plus,
   Settings,
   X,
@@ -26,8 +22,6 @@ import {
   FileText,
   Presentation,
   Eye,
-  Film,
-  FileDown,
 } from 'lucide-react'
 import { useAppStore, type Message, type ThinkingStep } from '../store'
 import { exportToDocx, exportToPptx, exportToPdf, exportToHtml, exportToXlsx } from '../utils/documentGenerator'
