@@ -8,6 +8,7 @@ use crate::baidu_map::{map_search, map_geocoding, map_reverse_geocoding};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
+use calamine::Reader;
 use tauri::{Emitter, Manager};
 
 const MOXING_API: &str = "https://www.moxing.pro/v1";
@@ -2142,11 +2143,24 @@ fn extract_file_path(msg: &str) -> Option<String> {
 }
 
 /// 读取本地文件内容（支持txt/pdf/docx/xlsx等）
-/// v5.5.9: 所有同步I/O包裹在内部闭包中，调用处必须用 spawn_blocking 保护
+/// v5.5.39: PDF用lopdf解析、DOCX用zip解压提取、XLSX用calamine解析、100MB大小限制
+/// 所有同步I/O包裹在内部闭包中，调用处必须用 spawn_blocking 保护
 fn read_local_file_sync(path: &str) -> Result<String, String> {
     let p = std::path::Path::new(path);
     if !p.exists() {
         return Err(format!("文件不存在: {}", path));
+    }
+
+    // 🔧 v5.5.39: 100MB 文件大小限制
+    let file_size = std::fs::metadata(path)
+        .map_err(|e| format!("无法获取文件信息: {}", e))?
+        .len();
+    const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100MB
+    if file_size > MAX_FILE_SIZE {
+        return Err(format!(
+            "文件大小 {:.1}MB 超过100MB限制。请压缩或拆分文件后重试。",
+            file_size as f64 / (1024.0 * 1024.0)
+        ));
     }
 
     let ext = p.extension()
@@ -2160,47 +2174,162 @@ fn read_local_file_sync(path: &str) -> Result<String, String> {
                 .map_err(|e| format!("读取失败: {}", e))
         }
         "pdf" => {
-            let bytes = std::fs::read(path).map_err(|e| format!("读取PDF失败: {}", e))?;
-            let content = String::from_utf8_lossy(&bytes);
-            let texts: Vec<&str> = content.matches(|c: char| {
-                c.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(&c) || "，。！？、：；\"\"''（）【】《》—…· ".contains(c)
-            })
-                .filter(|s| s.len() > 2)
-                .collect();
-            let extracted = texts.join("");
-            if extracted.len() > 50 {
-                Ok(extracted)
+            // 🔧 v5.5.39: 用 lopdf 正确解析 PDF 内部结构，替代无效的 from_utf8_lossy
+            let pdf_doc = lopdf::Document::load(path)
+                .map_err(|e| format!("PDF加载失败: {}。文件可能已加密或损坏。", e))?;
+
+            let mut text_parts: Vec<String> = Vec::new();
+            let pages = pdf_doc.get_pages();
+
+            for (page_num, _) in pages.iter() {
+                if let Ok(page_text) = pdf_doc.extract_text(&[*page_num]) {
+                    let trimmed = page_text.trim();
+                    if !trimmed.is_empty() {
+                        text_parts.push(trimmed.to_string());
+                    }
+                }
+            }
+
+            let full_text = text_parts.join("\n");
+            if full_text.trim().len() > 20 {
+                // 截断到20000字符，避免超长内容撑爆上下文
+                if full_text.len() > 20000 {
+                    Ok(format!("{}...(PDF过长，仅展示前20000字)", &full_text[..20000]))
+                } else {
+                    Ok(full_text)
+                }
             } else {
-                Err("PDF文件内容无法提取（可能是扫描件或加密文件）。建议转换为txt或docx格式后重试。".to_string())
+                Err("PDF文件内容无法提取（可能是纯扫描件/图片PDF，无文字层）。建议使用OCR工具识别，或转换为docx格式后重试。".to_string())
             }
         }
         "docx" => {
-            use std::process::Command;
-            let output = Command::new("textutil")
-                .args(["-convert", "txt", "-stdout", path])
-                .output()
-                .map_err(|e| format!("调用textutil失败: {}", e))?;
-            let text = String::from_utf8_lossy(&output.stdout).to_string();
-            if text.trim().is_empty() {
-                Err("DOCX文件为空".to_string())
+            // 🔧 v5.5.39: 用 zip 解压 DOCX 提取文本，跨平台替代 macOS textutil
+            let file = std::fs::File::open(path)
+                .map_err(|e| format!("打开DOCX失败: {}", e))?;
+            let mut archive = zip::ZipArchive::new(file)
+                .map_err(|e| format!("DOCX解压失败: {}。文件可能已损坏。", e))?;
+
+            let mut text_parts: Vec<String> = Vec::new();
+
+            // 主文档内容
+            if let Ok(mut doc_xml) = archive.by_name("word/document.xml") {
+                let mut xml_content = String::new();
+                std::io::Read::read_to_string(&mut doc_xml, &mut xml_content)
+                    .map_err(|e| format!("读取document.xml失败: {}", e))?;
+
+                // 提取 <w:t> 标签内容（DOCX文字内容的核心标签）
+                // 手动解析，不依赖 regex 库
+                let xml = xml_content;
+                let mut search_pos = 0;
+                while search_pos < xml.len() {
+                    // 找 <w:t 开标签
+                    let open_start = xml[search_pos..].find("<w:t");
+                    if open_start.is_none() { break; }
+                    let open_idx = search_pos + open_start.unwrap();
+
+                    // 找开标签的结束 >
+                    let close_bracket = xml[open_idx..].find('>');
+                    if close_bracket.is_none() { break; }
+                    let content_start = open_idx + close_bracket.unwrap() + 1;
+
+                    // 跳过自闭合标签 <w:t/> 或 <w:t />
+                    let tag_text = &xml[open_idx..content_start];
+                    if tag_text.ends_with("/>") || tag_text.ends_with("/ >") {
+                        search_pos = content_start;
+                        continue;
+                    }
+
+                    // 找 </w:t> 闭标签
+                    let close_end = xml[content_start..].find("</w:t>");
+                    if close_end.is_none() { break; }
+                    let content_end = content_start + close_end.unwrap();
+
+                    let text = &xml[content_start..content_end];
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        text_parts.push(trimmed.to_string());
+                    }
+                    search_pos = content_end + 5; // 跳过 "</w:t>"
+                }
+            }
+
+            if text_parts.is_empty() {
+                Err("DOCX文件内容为空或无法提取。文件可能使用了特殊格式。".to_string())
             } else {
-                Ok(text)
+                let full_text = text_parts.join("");
+                if full_text.len() > 20000 {
+                    Ok(format!("{}...(文档过长，仅展示前20000字)", &full_text[..20000]))
+                } else {
+                    Ok(full_text)
+                }
             }
         }
         "xlsx" | "xls" => {
-            Err("Excel文件暂不支持在AI对话中直接读取。请将数据复制粘贴到对话中，或先导出为CSV格式。".to_string())
+            // 🔧 v5.5.39: 用 calamine 解析 Excel，替代之前的硬报错
+            let mut workbook: calamine::Sheets<_> =
+                calamine::open_workbook(path)
+                    .map_err(|e| format!("Excel加载失败: {}。文件可能已损坏或为旧版xls格式。", e))?;
+
+            let mut sheets_text: Vec<String> = Vec::new();
+            let sheet_names = workbook.sheet_names().to_vec();
+
+            for sheet_name in &sheet_names {
+                if let Ok(range) = workbook.worksheet_range(sheet_name) {
+                    let mut rows_text: Vec<String> = Vec::new();
+                    let mut row_count = 0;
+                    const MAX_ROWS: usize = 50;
+                    const MAX_COLS: usize = 20;
+
+                    for row in range.rows() {
+                        if row_count >= MAX_ROWS { break; }
+                        let mut cells: Vec<String> = Vec::new();
+                        for (col_idx, cell) in row.iter().enumerate() {
+                            if col_idx >= MAX_COLS { break; }
+                            cells.push(match cell {
+                                calamine::Data::String(s) => s.clone(),
+                                calamine::Data::Float(f) => format!("{}", f),
+                                calamine::Data::Int(i) => format!("{}", i),
+                                calamine::Data::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_string(),
+                                calamine::Data::DateTime(dt) => {
+                                    // ExcelDateTime: 直接转为调试字符串
+                                    format!("{:?}", dt)
+                                },
+                                _ => String::new(),
+                            });
+                        }
+                        let row_text = cells.join(" | ");
+                        if !row_text.trim().is_empty() {
+                            rows_text.push(row_text);
+                        }
+                        row_count += 1;
+                    }
+
+                    if !rows_text.is_empty() {
+                        sheets_text.push(format!("[工作表: {}]\n{}", sheet_name, rows_text.join("\n")));
+                    }
+                }
+            }
+
+            if sheets_text.is_empty() {
+                Err("Excel文件内容为空或无法提取。".to_string())
+            } else {
+                let full_text = sheets_text.join("\n\n");
+                if full_text.len() > 10000 {
+                    Ok(format!("{}...(表格过长，仅展示前10000字)", &full_text[..10000]))
+                } else {
+                    Ok(full_text)
+                }
+            }
         }
         "doc" | "ppt" | "pptx" => {
             Err(format!("{}格式暂不支持直接读取。请转换为docx/pdf/txt格式后重试。", ext.to_uppercase()))
         }
         _ => {
-            let metadata = match std::fs::metadata(path) {
-                Ok(m) => m,
-                Err(_) => {
-                    return Err(format!("不支持直接读取此文件类型(.{})。支持的格式: txt, md, json, csv, pdf, docx", ext))
-                }
-            };
-            Err(format!("不支持直接读取此文件类型(.{})，大小: {}KB。支持的格式: txt, md, json, csv, pdf, docx", ext, metadata.len() / 1024))
+            Err(format!(
+                "不支持直接读取此文件类型(.{})，大小: {:.1}MB。支持的格式: txt, md, json, csv, pdf, docx, xlsx",
+                ext,
+                file_size as f64 / (1024.0 * 1024.0)
+            ))
         }
     }
 }

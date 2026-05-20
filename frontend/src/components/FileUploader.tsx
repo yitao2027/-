@@ -109,6 +109,22 @@ export default function FileUploader({ onFileAdded }: Props) {
       console.warn('[FileUploader] 文件列表为空');
       return;
     }
+
+    // 🔧 v5.5.39: 100MB 文件大小限制
+    const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+    const oversizedFiles = Array.from(files).filter(f => f.size > MAX_FILE_SIZE);
+    if (oversizedFiles.length > 0) {
+      const names = oversizedFiles.map(f => `"${f.name}"(${(f.size/1024/1024).toFixed(1)}MB)`).join('、');
+      alert(`以下文件超过100MB大小限制，无法上传：\n${names}\n请压缩或拆分文件后重试。`);
+      // 过滤掉超大文件，继续处理其余文件
+      const validFiles = Array.from(files).filter(f => f.size <= MAX_FILE_SIZE);
+      if (validFiles.length === 0) return;
+      // 用 DataTransfer 构造新的 FileList（兼容处理）
+      const dt = new DataTransfer();
+      validFiles.forEach(f => dt.items.add(f));
+      files = dt.files;
+    }
+
     const newFiles: UploadedFile[] = [];
     let processedCount = 0;
     const totalCount = files.length;
@@ -481,7 +497,7 @@ export default function FileUploader({ onFileAdded }: Props) {
               {isDragging ? '松开以上传' : '拖拽文件到这里'}
             </p>
             <p className="text-xs mt-1" style={{ color: '#9CA3AF' }}>
-              支持：图片 · PDF · Word · PPT · Excel
+              支持：图片 · PDF · Word · PPT · Excel（最大100MB）
             </p>
           </div>
 

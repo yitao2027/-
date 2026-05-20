@@ -242,17 +242,20 @@ export default function ChatArea() {
           imageDataList.push({ dataUrl: f.dataUrl, name: f.name })
         }
         // 🔧 docx/pdf/xlsx：已在FileUploader中提取文本，直接用content
+        // v5.5.39: 截断长度从5000提升到20000
         else if ((f.type === 'docx' || f.type === 'pdf') && f.content) {
-          const text = f.content.substring(0, 5000)
+          const text = f.content.substring(0, 20000)
           const label = f.type === 'pdf' ? 'PDF文件' : 'Word文档'
-          preview = `[${label}: ${f.name}]\n--- 文档内容 ---\n${text}${f.content.length > 5000 ? '\n...(文档过长，仅展示前5000字)' : ''}`
+          preview = `[${label}: ${f.name}]\n--- 文档内容 ---\n${text}${f.content.length > 20000 ? '\n...(文档过长，仅展示前20000字)' : ''}`
         }
         // 🔧 Excel/其他document类：content已在FileUploader中提取
+        // v5.5.39: 截断长度从5000提升到10000
         else if (f.type === 'document' && f.content) {
-          const text = f.content.substring(0, 5000)
-          preview = `[文档: ${f.name}]\n--- 内容预览 ---\n${text}${f.content.length > 5000 ? '\n...(文档过长，仅展示前5000字)' : ''}`
+          const text = f.content.substring(0, 10000)
+          preview = `[文档: ${f.name}]\n--- 内容预览 ---\n${text}${f.content.length > 10000 ? '\n...(文档过长，仅展示前10000字)' : ''}`
         }
         // 纯文本文件（TXT等）：从dataUrl安全读取
+        // v5.5.39: 截断长度从3000提升到10000
         else if (f.type === 'document' && f.dataUrl) {
           try {
             // 仅对TXT等纯文本文件尝试解码base64，PDF/XLSX等已在FileUploader中提取
@@ -260,7 +263,7 @@ export default function ChatArea() {
               const base64 = f.dataUrl?.split(',')[1] || ''
               if (base64) {
                 const decoded = atob(base64)
-                preview = `[文本: ${f.name}]\n--- 内容预览 ---\n${decoded.substring(0, 3000)}${decoded.length > 3000 ? '\n...(文件过长，仅展示前3000字)' : ''}`
+                preview = `[文本: ${f.name}]\n--- 内容预览 ---\n${decoded.substring(0, 10000)}${decoded.length > 10000 ? '\n...(文件过长，仅展示前10000字)' : ''}`
               } else {
                 preview = `[文件: ${f.name}, 大小: ${(f.size / 1024).toFixed(1)}KB]`
               }
