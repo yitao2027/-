@@ -1581,20 +1581,33 @@ async fn fetch_map_context(user_msg: &str) -> Result<String, String> {
             Ok(result) => {
                 // 🔥 v4.9.9 修复：百度API返回结构为 { status, result: { location: {lng, lat} } }
                 // location 字段嵌套在 result 内部，必须逐层取
-                let loc = result.get("result")
-                    .and_then(|r| r.get("location"));
+                let result_obj = result.get("result");
+                let loc = result_obj.and_then(|r| r.get("location"));
                 if let Some(loc) = loc {
-                    let lng = loc["lng"].as_str().unwrap_or("0");
-                    let lat = loc["lat"].as_str().unwrap_or("0");
+                    let precise = result_obj
+                        .and_then(|r| r.get("precise"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let confidence = result_obj
+                        .and_then(|r| r.get("confidence"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    let lng_f = loc["lng"].as_f64().or_else(|| loc["lng"].as_str().and_then(|s| s.parse().ok())).unwrap_or(0.0);
+                    let lat_f = loc["lat"].as_f64().or_else(|| loc["lat"].as_str().and_then(|s| s.parse().ok())).unwrap_or(0.0);
+                    if lng_f == 0.0 || lat_f == 0.0 {
+                        emit_log("⚠️ 地理编码返回坐标为0，跳过POI搜索");
+                        return Ok(String::new());
+                    }
                     let formatted_addr = result.get("formatted_address")
                         .and_then(|v| v.as_str()).unwrap_or(addr);
+                    emit_log(&format!("📍 地理编码成功: {} precise={} confidence={}", formatted_addr, precise, confidence));
                     context_parts.push(format!(
-                        "**标准化地址**: {}\n**坐标**: {}, {}",
-                        formatted_addr, lng, lat
+                        "**标准化地址**: {}\n**坐标**: {:.6}, {:.6}",
+                        formatted_addr, lng_f, lat_f
                     ));
                     // ⚠️ Place API v2 要求 location 格式为 "纬度,经度"（lat,lng）
                     // 而地理编码返回的是 lng,lat 顺序，这里需要反转
-                    Some(format!("{},{}", lat, lng))
+                    Some(format!("{:.6},{:.6}", lat_f, lng_f))
                 } else {
                     let status = result.get("status").and_then(|v| v.as_i64()).unwrap_or(-1);
                     emit_log(&format!("⚠️ 地理编码失败 status={}", status));

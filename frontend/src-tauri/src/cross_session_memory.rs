@@ -83,13 +83,17 @@ pub async fn store_memory(req: &StoreMemoryRequest, app_data_dir: &std::path::Pa
         .unwrap_or_default()
         .as_secs() as i64;
 
-    use arrow_array::{StringArray, Int64Array, Array, FixedSizeListArray};
-    use arrow_array::types::Float32Type;
+    use arrow_array::{StringArray, Int64Array, Array, FixedSizeListArray, Float32Array};
 
     // 构建向量列：FixedSizeList<f32, 1024>
-    let vector_array = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-        vec![Some(vector.iter().map(|&v| Some(v)).collect::<Vec<_>>())],
+    // 🔧 修复：使用 Float32Array + FixedSizeListArray::new 替代 from_iter_primitive
+    // 避免 schema 不匹配导致的 LanceDB 写入失败
+    let float_values = Float32Array::from(vector.iter().map(|&v| v as f32).collect::<Vec<_>>());
+    let vector_array = FixedSizeListArray::new(
+        std::sync::Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, false)),
         VECTOR_DIM as i32,
+        std::sync::Arc::new(float_values),
+        None,
     );
 
     let batch = arrow_array::RecordBatch::try_new(

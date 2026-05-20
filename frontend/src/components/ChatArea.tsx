@@ -757,13 +757,16 @@ export default function ChatArea() {
         const userId = localStorage.getItem('shaoziclaw_user_id') || 'default'
         invoke('store_scenario_block', {
           userId,
-          sessionId: currentSessionId,
-          topic: sessionTitle,
-          problem: textToSend.slice(0, 500),
-          solution: finalContent.slice(0, 1000),
-          outcome: '已回答',
-          keyFacts: [],
-          tags: activeExpertType ? [activeExpertType] : [],
+          scenario: {
+            sessionId: currentSessionId,
+            date: new Date().toISOString().split('T')[0],
+            topic: sessionTitle,
+            problem: textToSend.slice(0, 500),
+            solution: finalContent.slice(0, 1000),
+            outcome: '已回答',
+            keyFacts: [],
+            tags: activeExpertType ? [activeExpertType] : [],
+          },
         }).catch((e: any) => {
           console.warn('[分层记忆] 场景块存储失败:', e);
         });
@@ -1462,13 +1465,15 @@ function MessageBubble({ message }: { message: Message }) {
       const allMessages = useAppStore.getState().getActiveMessages()
       const userMsg = [...allMessages].reverse().find(m => m.role === 'user')
       await invoke('submit_feedback', {
-        messageId: message.id,
-        userQuery: userMsg?.content || '',
-        aiResponse: message.content,
-        skillUsed: message.skillName || null,
-        feedbackType: type,
-        reason: reason || null,
-        comment: null,
+        req: {
+          messageId: message.id,
+          userQuery: userMsg?.content || '',
+          aiResponse: message.content,
+          skillUsed: message.skillName || null,
+          feedbackType: type,
+          reason: reason || null,
+          comment: null,
+        },
       })
     } catch(e) { /* 静默处理 */ }
   }

@@ -128,8 +128,8 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
         const userId = `phone_${phone}`
         localStorage.setItem('shaoziclaw_user_id', userId)
         const diagResult: any = await invoke('get_diagnostic_code', { userId })
-        if (diagResult?.diagnostic_code) {
-          localStorage.setItem('shaoziclaw_diagnostic_code', diagResult.diagnostic_code)
+        if (diagResult && typeof diagResult === 'string') {
+          localStorage.setItem('shaoziclaw_diagnostic_code', diagResult)
         }
       } catch (e) {
         console.warn('[诊断码] 获取失败（不影响登录）:', e)
@@ -176,15 +176,17 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
 
       // Step 2: 尝试登录
       try {
-        await invoke('login', { email, password });
+        await invoke('login', { request: { email, password } });
       } catch {
         // 后端没有用户则自动注册（注册时会调用 redeem_invite_code 标记已使用）
         try {
           const registerResult = await invoke<{ success: boolean; message: string }>('register', { 
-            email, 
-            password, 
-            name: email.split('@')[0],
-            invite_code: code  // 🔒 传递邀请码给后端，注册时标记已使用
+            request: {
+              email, 
+              password, 
+              name: email.split('@')[0],
+              invite_code: code
+            }
           });
           if (!registerResult.success) {
             setLoading(false);
@@ -207,9 +209,9 @@ export default function LoginScreen({ onLogin }: LoginScreenProps) {
         const userId = email.toLowerCase().trim()
         localStorage.setItem('shaoziclaw_user_id', userId)
         const diagResult: any = await invoke('get_diagnostic_code', { userId })
-        if (diagResult?.diagnostic_code) {
-          localStorage.setItem('shaoziclaw_diagnostic_code', diagResult.diagnostic_code)
-          console.log(`[诊断码] 用户 ${userId} 的诊断码: ${diagResult.diagnostic_code}`)
+        if (diagResult && typeof diagResult === 'string') {
+          localStorage.setItem('shaoziclaw_diagnostic_code', diagResult)
+          console.log(`[诊断码] 用户 ${userId} 的诊断码: ${diagResult}`)
         }
       } catch (e) {
         console.warn('[诊断码] 获取失败（不影响登录）:', e)

@@ -430,9 +430,11 @@ function AboutSection() {
       const uid = localStorage.getItem('shaoziclaw_user_id') || 'default';
       import('@tauri-apps/api/core').then(({ invoke }) => {
         invoke('get_diagnostic_code', { userId: uid }).then((res: any) => {
-          if (res?.diagnostic_code) {
-            setDiagnosticCode(res.diagnostic_code);
-            localStorage.setItem('shaoziclaw_diagnostic_code', res.diagnostic_code);
+          // 🔧 Bug54修复: 诊断码兼容string和object两种返回值
+          const code = typeof res === 'string' ? res : (res?.diagnostic_code || '');
+          if (code) {
+            setDiagnosticCode(code);
+            localStorage.setItem('shaoziclaw_diagnostic_code', code);
           }
         }).catch(() => {});
       });
